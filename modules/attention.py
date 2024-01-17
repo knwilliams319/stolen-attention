@@ -6,7 +6,11 @@ import torch.nn.functional as F
 
 # SECTION: MultiheadAttention Implementation
 class MultiheadAttention(nn.Module):
-    def __init__(self, input_dim, embed_dim, num_heads):
+    def __init__(self, 
+                 input_dim, 
+                 embed_dim, 
+                 num_heads,
+                 dropout=0.0):
         super().__init__()
         assert embed_dim % num_heads == 0, "Embedding dimension must be 0 modulo number of heads."
 
@@ -14,8 +18,9 @@ class MultiheadAttention(nn.Module):
         self.num_heads = num_heads
         self.head_dim = embed_dim // num_heads
 
+        self.dropout = nn.Dropout(dropout)
+
         # Stack all weight matrices 1...h together for efficiency
-        # Note that in many implementations you see "bias=False" which is optional
         self.qkv_proj = nn.Linear(input_dim, 3 * embed_dim)
         self.o_proj = nn.Linear(embed_dim, embed_dim)
 
@@ -48,13 +53,14 @@ class MultiheadAttention(nn.Module):
         else:
             return o
         
-    def scaled_dot_product(q, k, v, mask=None):
+    def scaled_dot_product(self, q, k, v, mask=None):
         d_k = q.size()[-1]
         attn_logits = torch.matmul(q, k.transpose(-2, -1))
         attn_logits = attn_logits / torch.sqrt(d_k)
         if mask is not None:
             attn_logits = attn_logits.masked_fill(mask == 0, -9e15)
         attention = F.softmax(attn_logits, dim=-1)
+        attention = self.dropout(attention)
         values = torch.matmul(attention, v)
         return values, attention
 #!SECTION
