@@ -55,7 +55,7 @@ class CausalTransformer(L.LightningModule):
         super().__init__()
         self.save_hyperparameters()
         self._create_model()
-        self._init_layers()  # TODO: Implement this function
+        self._init_layers()
 
     def _create_model(self):
         # Input projection Layer
@@ -78,7 +78,6 @@ class CausalTransformer(L.LightningModule):
         # Transformer Decoder
         # NOTE: Not a Typo. In a Decoder-only architecture, the Decoder is architecturally equivalent to an Encoder.
         # NOTE: When normalizing before, an extra LayerNorm is used before feeding data to the output_net
-        # TODO: I might need to add extra arguments to allow attn_dropout to differ from dropout
         self.transformer = nn.Sequential(
             TransformerEncoder(
                 num_layers=self.hparams.num_layers,
