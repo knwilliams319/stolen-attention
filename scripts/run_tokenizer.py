@@ -82,7 +82,7 @@ def tokenize_file_with_packing(tokenizer: SentencePieceProcessor, file: Path, ex
             tokens = tokenizer.encode(line, out_type=int)
             packer.pack(tokens)
     
-    tokens_as_tensor = packer.to_tensor(dtype=torch.float16)
+    tokens_as_tensor = packer.to_tensor(dtype=torch.int16)
     tensor_path = file.parent / (file.name + '.tokenized.pt')
     torch.save(tokens_as_tensor, tensor_path)
     return tensor_path
