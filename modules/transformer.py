@@ -60,7 +60,7 @@ class CausalTransformer(L.LightningModule):
     def _create_model(self):
         # Input projection Layer
         self.input_proj = None  # if None, self._init_layers will set this to nn.Identity
-        if self.hparams.input_dim != self.hparams.model_dim:
+        if self.hparams.input_dim != self.hparams.model_dim:  # TODO: I think we always want the input projection layer
             self.input_proj = nn.Linear(self.hparams.input_dim, 
                                         self.hparams.model_dim, 
                                         bias=self.hparams.use_projection_bias)
@@ -78,18 +78,16 @@ class CausalTransformer(L.LightningModule):
         # Transformer Decoder
         # NOTE: Not a Typo. In a Decoder-only architecture, the Decoder is architecturally equivalent to an Encoder.
         # NOTE: When normalizing before, an extra LayerNorm is used before feeding data to the output_net
-        self.transformer = nn.Sequential(
-            TransformerEncoder(
-                num_layers=self.hparams.num_layers,
-                input_dim=self.hparams.model_dim,
-                dim_feedforward=self.hparams.ffn_dim,
-                num_heads=self.hparams.num_heads,
-                dropout=self.hparams.dropout,
-                attn_dropout=self.hparams.attn_dropout,
-                activation_dropout=self.hparams.activation_dropout
-            ),
-            nn.LayerNorm(self.hparams.model_dim)  # Decoder blocks normalize before their layers, so we need an extra norm here
+        self.transformer = TransformerEncoder(
+            num_layers=self.hparams.num_layers,
+            input_dim=self.hparams.model_dim,
+            dim_feedforward=self.hparams.ffn_dim,
+            num_heads=self.hparams.num_heads,
+            dropout=self.hparams.dropout,
+            attn_dropout=self.hparams.attn_dropout,
+            activation_dropout=self.hparams.activation_dropout
         )
+        self.output_norm = nn.LayerNorm(self.hparams.model_dim)  # Decoder blocks normalize before their layers, so we need an extra norm here before our output MLP
 
         # Output classifier
         self.output_proj = nn.Linear(self.hparams.model_dim, 
@@ -122,8 +120,9 @@ class CausalTransformer(L.LightningModule):
         x = self.positional_encoding(x)
         x = self.dropout(x)
 
-        # Send data through the decoder layers
+        # Send data through the decoder layers and normalize outputs
         x = self.transformer(x, mask=mask)
+        x = self.output_norm(x)
 
         # Project outputs
         x = self.output_proj(x)
