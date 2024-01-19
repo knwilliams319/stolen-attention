@@ -1,7 +1,7 @@
 # SECTION: Necessary imports
 import torch.nn as nn
 
-from attention import MultiheadAttention
+from .attention import MultiheadAttention
 #!SECTION
 
 # SECTION: A single Encoder Block

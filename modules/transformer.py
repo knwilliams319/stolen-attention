@@ -5,9 +5,9 @@ import torch.nn.functional as F
 import torch.optim as optim
 import lightning as L
 
-from pos_encoding import PositionalEncoding
-from encoder import TransformerEncoder
-from lr_scheduler import CosineWarmupScheduler
+from .pos_encoding import PositionalEncoding
+from .encoder import TransformerEncoder
+from .lr_scheduler import CosineWarmupScheduler
 #!SECTION
 
 # SECTION: A Decoder-Only Transformer Lightning Module for Causal Language Modeling
@@ -111,6 +111,7 @@ class CausalTransformer(L.LightningModule):
             nn.init.constant_(self.output_proj.bias, 0.0)
 
     def forward(self, x, mask=None):
+        # TODO: Ensure the mask is applied to pad tokens so that we never pay attention to them
         """
         Args:
             x: Input features of shape [Batch, SeqLen, input_dim]
