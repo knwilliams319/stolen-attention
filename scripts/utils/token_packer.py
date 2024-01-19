@@ -45,6 +45,6 @@ class TokenPacker:
         '''
         self.curr_row[self.curr_idx:] = self.pad_token
         self.rows.append(self.curr_row)
-        ret = torch.cat(self.rows).to(dtype)
+        ret = torch.stack(self.rows).to(dtype)
         self.rows.pop() # we don't want to permanently store this in case more tokens are packed later
         return ret
