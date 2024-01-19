@@ -163,5 +163,8 @@ cython_debug/
 # Our training corpus (and eventually, evaluation task tokens)
 data/
 
+# Model checkpoints
+checkpoints/
+
 # Debugging in VsCode
 .vscode/
