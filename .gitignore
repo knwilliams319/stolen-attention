@@ -163,7 +163,7 @@ cython_debug/
 # Our training corpus (and eventually, evaluation task tokens)
 data/
 
-# Model checkpoints
+# PyTorch Lightning logging and checkpointing
 checkpoints/
 
 # Debugging in VsCode
