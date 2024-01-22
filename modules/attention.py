@@ -55,11 +55,14 @@ class MultiheadAttention(nn.Module):
             return o
         
     def scaled_dot_product(self, q, k, v, mask=None):
-        d_k = q.size()[-1]
+        d_k = q.size(-1)
         attn_logits = torch.matmul(q, k.transpose(-2, -1))
         attn_logits = attn_logits / math.sqrt(d_k)
+
+        # TODO: is this the ordering in which fairseq applies their mask?
         if mask is not None:
-            attn_logits = attn_logits.masked_fill(mask == 0, -9e15)
+            attn_logits += mask.unsqueeze(1)  # add head dimension to mask
+
         attention = F.softmax(attn_logits, dim=-1)
         attention = self.dropout(attention)
         values = torch.matmul(attention, v)

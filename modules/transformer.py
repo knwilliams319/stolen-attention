@@ -58,6 +58,12 @@ class CausalTransformer(L.LightningModule):
         self._init_layers()
 
     def _create_model(self):
+        # Causal attention mask which ignores tokens beyond the current position
+        causal_mask = torch.triu(torch.ones(self.hparams.max_context_len, self.hparams.max_context_len), 1)
+        causal_mask *= float('-inf')
+        causal_mask = torch.nan_to_num(causal_mask)
+        self.register_buffer("causal_mask", causal_mask, persistent=False)
+
         # Input projection Layer
         self.input_proj = None  # if None, self._init_layers will set this to nn.Identity
         if self.hparams.input_dim != self.hparams.model_dim:  # TODO: I think we always want the input projection layer
@@ -108,13 +114,19 @@ class CausalTransformer(L.LightningModule):
         if self.hparams.use_projection_bias:
             nn.init.constant_(self.output_proj.bias, 0.0)
 
-    def forward(self, x, mask=None):
-        # TODO: Ensure the mask is applied to pad tokens so that we never pay attention to them
+    def forward(self, x, pad_mask=None):
         """
         Args:
             x: Input features of shape [Batch, SeqLen, input_dim]
-            mask: Mask to apply on the attention outputs (optional)
+            pad_mask: Mask to apply on padding positions in the attention outputs (optional), shape is [Batch, SeqLen]
         """
+        # If supplied, 'mask' will contain -inf at pad positions which should also be ignored
+        _, seq_len, _ = x.size()
+        mask = self.causal_mask[:seq_len, :seq_len]
+        if pad_mask is not None:
+            # pad_mask.shape --> [Batch, SeqLen, SeqLen] in order to add our causal mask with shape [SeqLen, SeqLen]
+            mask = pad_mask.unsqueeze(-1).expand(-1, -1, seq_len) + mask
+
         # Project inputs, apply positional encoding, and apply dropout
         x = self.input_proj(x)
         x = self.positional_encoding(x)
