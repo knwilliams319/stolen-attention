@@ -1,22 +1,21 @@
 # SECTION: Necessary imports
-import numpy as np
 import torch.optim as optim
+from torch.optim.lr_scheduler import LinearLR, CosineAnnealingWarmRestarts, ChainedScheduler, MultiplicativeLR
 #!SECTION
 
-# SECTION: Cosine Learning Rate Scheduler with Warmup
-class CosineWarmupScheduler(optim.lr_scheduler._LRScheduler):
-    def __init__(self, optimizer, warmup, max_iters):
-        self.warmup = warmup
-        self.max_num_iters = max_iters
-        super().__init__(optimizer)
-
-    def get_lr(self):
-        lr_factor = self.get_lr_factor(epoch=self.last_epoch)
-        return [base_lr * lr_factor for base_lr in self.base_lrs]
-
-    def get_lr_factor(self, epoch):
-        lr_factor = 0.5 * (1 + np.cos(np.pi * epoch / self.max_num_iters))
-        if epoch <= self.warmup:
-            lr_factor *= epoch * 1.0 / self.warmup
-        return lr_factor
+# SECTION: Cosine Annealing Learning Rate Scheduler with Warmup
+class CosineWarmupRestartScheduler(optim.lr_scheduler.SequentialLR):
+    '''
+    Scheduler with a Linear Warmup Phase before Cosine Annealing with Restarts is applied.
+    '''
+    def __init__(self, optimizer, warmup_updates, warmup_init_lr, warmup_end_lr, min_lr, lr_period_updates, t_mult, lr_shrink=None):
+        super().__init__(optimizer,
+                         schedulers=[LinearLR(optimizer=optimizer,
+                                              start_factor=(warmup_end_lr - warmup_init_lr)/warmup_updates,
+                                              total_iters=warmup_updates-1),
+                                     CosineAnnealingWarmRestarts(optimizer=optimizer,
+                                                                 T_0=lr_period_updates,
+                                                                 T_mult=t_mult,
+                                                                 eta_min=min_lr)],
+                         milestones=[warmup_updates-1])
 #!SECTION

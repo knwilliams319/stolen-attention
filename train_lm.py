@@ -79,12 +79,12 @@ if __name__ == "__main__":
     trainer = L.Trainer(
         deterministic=False, 
         default_root_dir=root_dir,
-        enable_progress_bar=True,
+        enable_progress_bar=False,
         callbacks=[ModelSummary(),
                    ModelCheckpoint(save_weights_only=True, mode="min", monitor="val_loss"),
                    LearningRateMonitor(logging_interval='step')],
         accelerator="gpu",
-        devices=3,
+        devices=1,
         strategy=DDPStrategy(static_graph=True),
         precision="16-mixed",
         max_epochs=100,
@@ -115,10 +115,14 @@ if __name__ == "__main__":
         model = Wikitext103Model(input_dim=len(tokenizer),
                                  model_dim=128,
                                  num_classes=len(tokenizer),
-                                 lr=1e-6,
-                                 max_iters=trainer.max_epochs * len(train_loader),
-                                 warmup=1000,
-                                 max_context_len=1024)
+                                 max_context_len=1024,
+                                 warmup_updates=5,
+                                 lr_period_updates=2,
+                                 warmup_end_lr=1.0,
+                                 t_mult=2,
+                                 warmup_init_lr=1e-07,
+                                 min_lr=0.0001,
+                                 lr_shrink=0.5)
         trainer.fit(model, train_loader, val_loader)
         # model = Wikitext103Model.load_from_checkpoint(trainer.checkpoint_callback.best_model_path)
 
