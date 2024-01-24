@@ -1,18 +1,22 @@
 # SECTION: Necessary imports
 import torch.nn as nn
 
-from .attention import MultiheadAttention
+from .attention import MultiheadAttention, EuclideanAttention
 #!SECTION
 
 # SECTION: A single Encoder Block
 class EncoderBlock(nn.Module):
-    def __init__(self, 
+    def __init__(self,
                  input_dim=128, 
                  dim_feedforward=4096,
                  num_heads=8,
                  dropout=0.3,
                  attn_dropout=0.1,
-                 activation_dropout=0.1
+                 activation_dropout=0.1,
+                 max_context_len=-1,
+                 use_euclidean_attention=False,
+                 learn_temperatures=False,
+                 positional_temperatures=False,
                  ):
         """EncoderBlock.
 
@@ -23,6 +27,10 @@ class EncoderBlock(nn.Module):
             dropout: Dropout probability applied prior to adding residuals
             attn_dropout: Dropout probability passed to self attention module
             activation_dropout: Dropout probability applied after activation of MLP
+            max_context_len: Maximum context length expected by this model (needed for EuclideanAttention only)
+            use_euclidean_attention: Whether to use EuclideanAttention or normal MultiheadAttention
+            learn_temperatures: Whether to learn temperature paramaters to control softmax
+            positional_temperatures: Whether to learn position-wise temperatures to control softmax
         """
         super().__init__()
 
@@ -31,10 +39,23 @@ class EncoderBlock(nn.Module):
         self.ffn_norm = nn.LayerNorm(input_dim)
 
         # Attention layer
-        self.self_attn = MultiheadAttention(input_dim, 
-                                            input_dim, 
-                                            num_heads, 
-                                            dropout=attn_dropout)
+        if use_euclidean_attention:
+            self.self_attn = EuclideanAttention(
+                input_dim,
+                input_dim,
+                num_heads,
+                max_context_len,
+                dropout=attn_dropout,
+                learn_temperatures=learn_temperatures,
+                positional_temperatures=positional_temperatures
+            )
+        else:
+            self.self_attn = MultiheadAttention(
+                input_dim, 
+                input_dim, 
+                num_heads, 
+                dropout=attn_dropout
+            )
 
         # Dropout module
         self.dropout = nn.Dropout(dropout)
@@ -76,7 +97,9 @@ class TransformerEncoder(nn.Module):
             **block_args: Arguments to pass to each EncoderBlock
         """
         super().__init__()
-        self.layers = nn.ModuleList([EncoderBlock(**block_args) for _ in range(num_layers)])
+        self.layers = nn.ModuleList(
+            [EncoderBlock(**block_args) for _ in range(num_layers)]
+        )
 
     def forward(self, x, mask=None):
         for layer in self.layers:

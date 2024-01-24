@@ -112,13 +112,25 @@ if __name__ == "__main__":
         print("Found pretrained model, loading...")
         model = Wikitext103Model.load_from_checkpoint(pretrained_filename)
     else:
-        model = Wikitext103Model(input_dim=len(tokenizer),
-                                 model_dim=128,
-                                 num_classes=len(tokenizer),
-                                 lr=1e-6,
-                                 max_iters=trainer.max_epochs * len(train_loader),
-                                 warmup=1000,
-                                 max_context_len=1024)
+        model = Wikitext103Model(
+            num_classes=len(tokenizer),          
+            lr=1e-6,
+            max_iters=trainer.max_epochs * len(train_loader),
+            warmup=1000,
+            max_context_len=1024,
+            model_dim=128,
+            use_euclidean_attention=False,
+            learn_temperatures=False,
+            positional_temperatures=False,
+            num_heads=8,
+            num_layers=16,
+            dropout=0.3,
+            attn_dropout=0.1,
+            activation_dropout=0.1,
+            ffn_dim=4096,
+            use_pos_encoding=True,
+            use_projection_bias=False
+        )
         trainer.fit(model, train_loader, val_loader)
         # model = Wikitext103Model.load_from_checkpoint(trainer.checkpoint_callback.best_model_path)
 
