@@ -14,13 +14,15 @@ from .lr_scheduler import CosineWarmupScheduler
 class CausalTransformer(L.LightningModule):
     def __init__(
         self,
-        input_dim,
-        model_dim,
         num_classes,
         lr,
         max_iters,
         warmup,
-        max_context_len,
+        max_context_len=1024,
+        model_dim=128,
+        use_euclidean_attention=False,
+        learn_temperatures=False,
+        positional_temperatures=False,
         num_heads=8,
         num_layers=16,
         dropout=0.3,
@@ -28,7 +30,6 @@ class CausalTransformer(L.LightningModule):
         activation_dropout=0.1,
         ffn_dim=4096,
         use_pos_encoding=True,
-        use_euclidean_attention=False,
         use_projection_bias=False
     ):
         """CausalTransformer.
@@ -65,16 +66,18 @@ class CausalTransformer(L.LightningModule):
         self.register_buffer("causal_mask", causal_mask, persistent=False)
 
         # Input projection Layer
-        self.input_proj = None  # if None, self._init_layers will set this to nn.Identity
-        if self.hparams.input_dim != self.hparams.model_dim:  # TODO: I think we always want the input projection layer
-            self.input_proj = nn.Linear(self.hparams.input_dim, 
-                                        self.hparams.model_dim, 
-                                        bias=self.hparams.use_projection_bias)
+        self.input_proj = nn.Linear(
+            self.hparams.num_classes, 
+            self.hparams.model_dim, 
+            bias=self.hparams.use_projection_bias
+        )
 
         # Positional encoding for sequences
         if self.hparams.use_pos_encoding:
-            self.positional_encoding = PositionalEncoding(d_model=self.hparams.model_dim, 
-                                                          max_len=self.hparams.max_context_len)
+            self.positional_encoding = PositionalEncoding(
+                d_model=self.hparams.model_dim, 
+                max_len=self.hparams.max_context_len
+            )
         else:
             self.positional_encoding = nn.Identity()
 
@@ -91,23 +94,26 @@ class CausalTransformer(L.LightningModule):
             num_heads=self.hparams.num_heads,
             dropout=self.hparams.dropout,
             attn_dropout=self.hparams.attn_dropout,
-            activation_dropout=self.hparams.activation_dropout
+            activation_dropout=self.hparams.activation_dropout,
+            max_context_len=self.hparams.max_context_len,
+            use_euclidean_attention=self.hparams.use_euclidean_attention,
+            learn_temperatures=self.hparams.learn_temperatures,
+            positional_temperatures=self.hparams.positional_temperatures
         )
         self.output_norm = nn.LayerNorm(self.hparams.model_dim)  # Decoder blocks normalize before their layers, so we need an extra norm here before our output MLP
 
         # Output classifier
-        self.output_proj = nn.Linear(self.hparams.model_dim, 
-                                     self.hparams.num_classes, 
-                                     bias=self.hparams.use_projection_bias)
+        self.output_proj = nn.Linear(
+            self.hparams.model_dim, 
+            self.hparams.num_classes, 
+            bias=self.hparams.use_projection_bias
+        )
 
     def _init_layers(self):
         # Input projection layer
-        if self.input_proj is None:
-            self.input_proj = nn.Identity()
-        else:
-            nn.init.xavier_uniform_(self.input_proj.weight)
-            if self.hparams.use_projection_bias:
-                nn.init.constant_(self.input_proj.bias, 0.0)
+        nn.init.xavier_uniform_(self.input_proj.weight)
+        if self.hparams.use_projection_bias:
+            nn.init.constant_(self.input_proj.bias, 0.0)
         
         # Output projection layer
         nn.init.xavier_uniform_(self.output_proj.weight)
@@ -120,12 +126,10 @@ class CausalTransformer(L.LightningModule):
             x: Input features of shape [Batch, SeqLen, input_dim]
             pad_mask: Mask to apply on padding positions in the attention outputs (optional), shape is [Batch, SeqLen]
         """
-        # If supplied, 'mask' will contain -inf at pad positions which should also be ignored
         _, seq_len, _ = x.size()
         mask = self.causal_mask[:seq_len, :seq_len]
-        if pad_mask is not None:
-            # pad_mask.shape --> [Batch, SeqLen, SeqLen] in order to add our causal mask with shape [SeqLen, SeqLen]
-            mask = pad_mask.unsqueeze(-1).expand(-1, -1, seq_len) + mask
+        if pad_mask is not None: # If supplied, 'pad_mask' will contain -inf at pad positions which should also be ignored
+            mask = pad_mask.unsqueeze(-1).expand(-1, -1, seq_len) + mask  # pad_mask.shape --> [Batch, SeqLen, SeqLen] in order to add our causal mask with shape [SeqLen, SeqLen]
 
         # Project inputs, apply positional encoding, and apply dropout
         x = self.input_proj(x)
