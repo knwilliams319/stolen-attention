@@ -33,7 +33,6 @@ class CausalTransformer(L.LightningModule):
         activation_dropout=0.1,
         ffn_dim=4096,
         use_pos_encoding=True,
-        use_projection_bias=False
     ):
         """CausalTransformer.
 
@@ -54,7 +53,6 @@ class CausalTransformer(L.LightningModule):
             ffn_dim=4096: Size of the MLP layers in the EncoderBlocks
             use_pos_encoding=True: Whether or not to use a sinusoidal positional encoding in this network
             use_euclidean_attention=False: Whether or not to use Euclidean Attention instead of classic MultiheadAttention
-            use_projection_bias: False (fairseq doesn't include a bias term in its input/output projection layers)
         """
         super().__init__()
         self.save_hyperparameters()
@@ -69,10 +67,10 @@ class CausalTransformer(L.LightningModule):
         self.register_buffer("causal_mask", causal_mask, persistent=False)
 
         # Input projection Layer
-        self.input_proj = nn.Linear(
+        # Using nn.Embedding allows us to skip one-hot encoding the token IDs, which introduces unnecessary data type conversions 
+        self.input_proj = nn.Embedding(
             self.hparams.num_classes, 
             self.hparams.model_dim, 
-            bias=self.hparams.use_projection_bias
         )
 
         # Positional encoding for sequences
@@ -109,7 +107,7 @@ class CausalTransformer(L.LightningModule):
         self.output_proj = nn.Linear(
             self.hparams.model_dim, 
             self.hparams.num_classes, 
-            bias=self.hparams.use_projection_bias
+            bias=False  # the nn.Embedding on the input has no bias; neither should the output embedding projection layer -- fairseq does this too
         )
 
     def _init_layers(self):

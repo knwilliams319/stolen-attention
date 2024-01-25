@@ -36,20 +36,10 @@ class Wikitext103Dataset(data.Dataset):
 
 class Wikitext103Model(CausalTransformer):
     def _calculate_loss(self, batch, mode):
-        # TODO: I don't like all of these type conversions. How can I condense this?
-        #       It seems like F.one_hot() and F.cross_entropy() require inputs to be long. But this is super inefficient
-        #       for data storage. Plus, we need the data to be .float() to be sent through the transformer.
         data, labels, padding_mask = batch
-
-        # NOTE: Data must be stored as longs for F.one_hot to work
-        # TODO: Should I pre-encode the tensors before I save them? Or is F.one_hot negligible work?
-        data = F.one_hot(data.long(), num_classes=self.hparams.num_classes).to(self.dtype)
-
         preds = self.forward(data, pad_mask=padding_mask) # shape = [bsz, context_len, vocab_size]
-        labels = labels.long()
-
         loss = F.cross_entropy(preds.view(-1, preds.size(-1)), labels.view(-1))
-        self.log("%s_loss" % mode, loss, sync_dist=True)  # a warning says we might want to use this, but it could cause communication overhead
+        self.log("%s_loss" % mode, loss, sync_dist=True)  # TODO: a warning says we might want to use this, but it could cause communication overhead
         return loss
 
     def training_step(self, batch, batch_idx):
