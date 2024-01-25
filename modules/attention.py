@@ -92,35 +92,17 @@ class EuclideanAttention(nn.Module):
     
     def _softmax_with_temperatures(self, x, dim=-1, eps=1e-3):
         """
-        Computes softmax along dimension `dim` of `input`. Applies `self.temperature` position-wise to scale
-        `input` prior to exponentiation. This is called in place of F.softmax only if temperature parameters
-        are to be learned. 
-
-        Regardless, even if self.temperature = torch.tensor([1]), this function is no different than F.softmax(input, dim=dim).
+        Applies `self.temperature` position-wise to scale `x` prior to softmax over dimension `dim`.
+        This is called in place of F.softmax only if temperature parameters are to be learned.
         """
-        n_batches, n_heads, seq_len, embed_dim = x.shape
+        _, _, seq_len, _ = x.shape  # [bsz, n_heads, seq_len, seq_len]
+        temperatures = torch.square(self.temperatures[:seq_len]) + eps  # square temps so they are nonnegative, then apply eps
 
-        # TODO: how can I make this faster? Having to make a new tensor every time has to be slow...
-        # NOTE: we square the temperature params to ensure they are never negative
-        # diagonalize the temperatures needed for the input of size sequence_length
-        if not self.positional_temperatures:
-            eye = torch.eye(seq_len,
-                            device='cuda',
-                            dtype=self.temperatures.dtype)
-            temperatures = eye * (torch.square(self.temperatures) + eps)
-        else:
-            # embed the first seq_len temperatures into a diagonal matrix that matches dimensionality of x
-            temperatures = torch.diag_embed(torch.square(self.temperatures[:seq_len]) + eps)
-
-        # replace -inf from attention mask to smallest representable number. without this, x @ temperatures
-        # results in NaNs which make the loss explode when we really just want small numbers that softmax will
-        # end up in us ignoring. 
-        x = torch.nan_to_num(x)  # TODO: run the debugger on this line. Unlike fairseq, I don't think I need to run this here. 
-
-        x = torch.matmul(x, temperatures)
-        x_max = torch.max(x, axis=dim, keepdims=True).values
-        exp_x_shifted = torch.exp(x - x_max)
-        return exp_x_shifted / torch.sum(exp_x_shifted, axis=dim, keepdims=True)
+        # NOTE: When temperatures are positionally learned, since `temperatures` has shape (`seq_len`,), broadcasting rules ensure 
+        #       that columns (positions) of the attention logit matrices `x` receive the same scaling factor. Otherwise, `temperatures` 
+        #       has shape (1,) and is applied elementwise. 
+        x *= temperatures
+        return F.softmax(x, dim=dim)
 #!SECTION
     
 # SECTION: MultiheadAttention Implementation
