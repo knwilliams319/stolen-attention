@@ -7,7 +7,7 @@ import lightning as L
 
 from .pos_encoding import PositionalEncoding
 from .encoder import TransformerEncoder
-from .lr_scheduler import CosineWarmupScheduler
+from .lr_scheduler import CosineWarmupRestartScheduler
 #!SECTION
 
 # SECTION: A Decoder-Only Transformer Lightning Module for Causal Language Modeling
@@ -15,14 +15,17 @@ class CausalTransformer(L.LightningModule):
     def __init__(
         self,
         num_classes,
-        lr,
-        max_iters,
-        warmup,
         max_context_len=1024,
         model_dim=128,
         use_euclidean_attention=False,
         learn_temperatures=False,
         positional_temperatures=False,
+        warmup_updates=16000,
+        warmup_init_lr=1e-07,
+        warmup_end_lr=1.0,
+        min_lr=0.0001,
+        lr_period_updates=270000,
+        t_mult=2,
         num_heads=8,
         num_layers=16,
         dropout=0.3,
@@ -156,11 +159,25 @@ class CausalTransformer(L.LightningModule):
         return attention_maps
 
     def configure_optimizers(self):
-        optimizer = optim.Adam(self.parameters(), lr=self.hparams.lr)
+        # This seems to be the closest to fairseq's NAGOptimizer (https://github.com/facebookresearch/fairseq/blob/main/fairseq/optim/nag.py)
+        # TODO: Allow momentum and weight_decay to be set at the command line, but with the defaults below to match fairseq
+        optimizer = optim.SGD(
+            self.parameters(), 
+            lr=self.hparams.warmup_end_lr,
+            momentum=0.99,
+            weight_decay=0.0,
+            nesterov=True
+        )
 
         # We don't return the lr scheduler because we need to apply it per iteration, not per epoch
-        self.lr_scheduler = CosineWarmupScheduler(
-            optimizer, warmup=self.hparams.warmup, max_iters=self.hparams.max_iters
+        self.lr_scheduler = CosineWarmupRestartScheduler(
+            optimizer,
+            warmup_updates=self.hparams.warmup_updates,
+            warmup_init_lr=self.hparams.warmup_init_lr,
+            warmup_end_lr=self.hparams.warmup_end_lr,
+            min_lr=self.hparams.min_lr,
+            lr_period_updates=self.hparams.lr_period_updates,
+            t_mult=self.hparams.t_mult
         )
         return optimizer
 

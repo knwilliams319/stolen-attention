@@ -115,10 +115,7 @@ if __name__ == "__main__":
         model = Wikitext103Model.load_from_checkpoint(pretrained_filename)
     else:
         model = Wikitext103Model(
-            num_classes=len(tokenizer),          
-            lr=1e-6,
-            max_iters=30, #trainer.max_epochs * len(train_loader),
-            warmup=1000,
+            num_classes=len(tokenizer),
             max_context_len=1024,
             model_dim=128,
             use_euclidean_attention=True,
@@ -131,7 +128,13 @@ if __name__ == "__main__":
             activation_dropout=0.1,
             ffn_dim=4096,
             use_pos_encoding=True,
-            use_projection_bias=False
+            use_projection_bias=False,
+            warmup_updates=5,
+            lr_period_updates=2,
+            t_mult=2,
+            warmup_end_lr=1.0,
+            warmup_init_lr=1e-07,
+            min_lr=0.0001,
         )
         trainer.fit(model, train_loader, val_loader)
         # model = Wikitext103Model.load_from_checkpoint(trainer.checkpoint_callback.best_model_path)
