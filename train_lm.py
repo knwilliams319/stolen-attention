@@ -5,6 +5,7 @@ import torch.utils.data as data
 import lightning as L
 from lightning.pytorch.callbacks import ModelCheckpoint, ModelSummary, LearningRateMonitor
 from lightning.pytorch.strategies import DDPStrategy
+from lightning.pytorch.profilers import AdvancedProfiler
 from pathlib import Path
 from sentencepiece import SentencePieceProcessor
 
@@ -79,7 +80,7 @@ if __name__ == "__main__":
     trainer = L.Trainer(
         deterministic=False, 
         default_root_dir=root_dir,
-        enable_progress_bar=False,
+        enable_progress_bar=True,
         callbacks=[ModelSummary(),
                    ModelCheckpoint(save_weights_only=True, mode="min", monitor="val_loss"),
                    LearningRateMonitor(logging_interval='step')],
@@ -87,8 +88,9 @@ if __name__ == "__main__":
         devices=1,
         strategy=DDPStrategy(static_graph=True),
         precision="16-mixed",
-        max_epochs=100,
+        max_steps=30, #max_epochs=100,
         gradient_clip_val=0.1,
+        profiler=AdvancedProfiler(dirpath='./', filename='profile.log')
     )
     trainer.logger._default_hp_metric = None  # Optional logging argument that we don't need
 
@@ -101,10 +103,10 @@ if __name__ == "__main__":
     test_dataset = Wikitext103Dataset(TEST_PATH, tokenizer.pad_id())
 
     train_loader = data.DataLoader(
-        train_dataset, batch_size=67, shuffle=True, drop_last=True, num_workers=3, pin_memory=True # TODO: Crank up the batch size
+        train_dataset, batch_size=52, shuffle=True, drop_last=True, num_workers=3, pin_memory=True # TODO: Crank up the batch size
     )
-    val_loader = data.DataLoader(val_dataset, batch_size=64, shuffle=False, drop_last=False, num_workers=4)
-    test_loader = data.DataLoader(test_dataset, batch_size=64, shuffle=False, drop_last=False, num_workers=4)
+    val_loader = data.DataLoader(val_dataset, batch_size=67, shuffle=False, drop_last=False, num_workers=4)
+    test_loader = data.DataLoader(test_dataset, batch_size=67, shuffle=False, drop_last=False, num_workers=4)
 
     # Check whether pretrained model exists. If yes, load it and skip training
     pretrained_filename = Path(CHECKPOINT_PATH, "Wikitext103Model.ckpt")
@@ -112,17 +114,28 @@ if __name__ == "__main__":
         print("Found pretrained model, loading...")
         model = Wikitext103Model.load_from_checkpoint(pretrained_filename)
     else:
-        model = Wikitext103Model(input_dim=len(tokenizer),
-                                 model_dim=128,
-                                 num_classes=len(tokenizer),
-                                 max_context_len=1024,
-                                 warmup_updates=5,
-                                 lr_period_updates=2,
-                                 warmup_end_lr=1.0,
-                                 t_mult=2,
-                                 warmup_init_lr=1e-07,
-                                 min_lr=0.0001,
-                                 lr_shrink=0.5)
+        model = Wikitext103Model(
+            num_classes=len(tokenizer),
+            max_context_len=1024,
+            model_dim=128,
+            use_euclidean_attention=True,
+            learn_temperatures=True,
+            positional_temperatures=False,
+            num_heads=8,
+            num_layers=16,
+            dropout=0.3,
+            attn_dropout=0.1,
+            activation_dropout=0.1,
+            ffn_dim=4096,
+            use_pos_encoding=True,
+            use_projection_bias=False,
+            warmup_updates=5,
+            lr_period_updates=2,
+            t_mult=2,
+            warmup_end_lr=1.0,
+            warmup_init_lr=1e-07,
+            min_lr=0.0001,
+        )
         trainer.fit(model, train_loader, val_loader)
         # model = Wikitext103Model.load_from_checkpoint(trainer.checkpoint_callback.best_model_path)
 
