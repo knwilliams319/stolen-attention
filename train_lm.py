@@ -5,6 +5,7 @@ import torch.utils.data as data
 import lightning as L
 from lightning.pytorch.callbacks import ModelCheckpoint, ModelSummary, LearningRateMonitor
 from lightning.pytorch.strategies import DDPStrategy
+from lightning.pytorch.profilers import AdvancedProfiler
 from pathlib import Path
 from sentencepiece import SentencePieceProcessor
 
@@ -84,11 +85,12 @@ if __name__ == "__main__":
                    ModelCheckpoint(save_weights_only=True, mode="min", monitor="val_loss"),
                    LearningRateMonitor(logging_interval='step')],
         accelerator="gpu",
-        devices=3,
+        devices=1,
         strategy=DDPStrategy(static_graph=True),
         precision="16-mixed",
-        max_epochs=100,
+        max_steps=30, #max_epochs=100,
         gradient_clip_val=0.1,
+        profiler=AdvancedProfiler(dirpath='./', filename='profile.log')
     )
     trainer.logger._default_hp_metric = None  # Optional logging argument that we don't need
 
@@ -101,10 +103,10 @@ if __name__ == "__main__":
     test_dataset = Wikitext103Dataset(TEST_PATH, tokenizer.pad_id())
 
     train_loader = data.DataLoader(
-        train_dataset, batch_size=67, shuffle=True, drop_last=True, num_workers=3, pin_memory=True # TODO: Crank up the batch size
+        train_dataset, batch_size=52, shuffle=True, drop_last=True, num_workers=3, pin_memory=True # TODO: Crank up the batch size
     )
-    val_loader = data.DataLoader(val_dataset, batch_size=64, shuffle=False, drop_last=False, num_workers=4)
-    test_loader = data.DataLoader(test_dataset, batch_size=64, shuffle=False, drop_last=False, num_workers=4)
+    val_loader = data.DataLoader(val_dataset, batch_size=67, shuffle=False, drop_last=False, num_workers=4)
+    test_loader = data.DataLoader(test_dataset, batch_size=67, shuffle=False, drop_last=False, num_workers=4)
 
     # Check whether pretrained model exists. If yes, load it and skip training
     pretrained_filename = Path(CHECKPOINT_PATH, "Wikitext103Model.ckpt")
@@ -115,12 +117,12 @@ if __name__ == "__main__":
         model = Wikitext103Model(
             num_classes=len(tokenizer),          
             lr=1e-6,
-            max_iters=trainer.max_epochs * len(train_loader),
+            max_iters=30, #trainer.max_epochs * len(train_loader),
             warmup=1000,
             max_context_len=1024,
             model_dim=128,
-            use_euclidean_attention=False,
-            learn_temperatures=False,
+            use_euclidean_attention=True,
+            learn_temperatures=True,
             positional_temperatures=False,
             num_heads=8,
             num_layers=16,
