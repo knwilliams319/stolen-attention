@@ -1,6 +1,6 @@
 # SECTION: Necessary imports
 import torch.optim as optim
-from torch.optim.lr_scheduler import LinearLR, CosineAnnealingWarmRestarts, ChainedScheduler, MultiplicativeLR
+from torch.optim.lr_scheduler import LinearLR, CosineAnnealingWarmRestarts
 #!SECTION
 
 # SECTION: Cosine Annealing Learning Rate Scheduler with Warmup
