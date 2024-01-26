@@ -19,25 +19,22 @@ class TokenPacker:
         '''
         Packs the tokens into its storage.
         '''
-        N = len(tokens)
-        if self.curr_idx + N < self.context_length:
-            self.curr_row[self.curr_idx:self.curr_idx+N] = torch.tensor(tokens)
-            self.curr_idx += N
-        else:
-            remainder = N # number of tokens that can't fit in self.curr_row
-            tokens_consumed = 0 # number of tokens consumed so far
+        if self.curr_idx + len(tokens) < self.context_length:  # tokens fit in self.curr_row
+            self.curr_row[self.curr_idx:self.curr_idx+len(tokens)] = torch.tensor(tokens)  # curr_row is a tensor
+            self.curr_idx += len(tokens)
+        else:  # tokens don't fit, and may be large enough to span multiple rows
+            remainder = len(tokens) # number of tokens that can't fit in self.curr_row
+            idx = 0 # index of next token to insert
             while remainder > 0:
-                num_to_accept = min(self.context_length - self.curr_idx, N - tokens_consumed)
-                self.curr_row[self.curr_idx:self.curr_idx+num_to_accept] = torch.tensor(tokens[tokens_consumed:tokens_consumed+num_to_accept])
-                if num_to_accept == self.context_length - self.curr_idx: # row is full
+                can_fit = min(self.context_length - self.curr_idx, remainder)
+                self.curr_row[self.curr_idx:self.curr_idx+can_fit] = torch.tensor(tokens[idx:idx+can_fit])  # fill row
+                self.curr_idx += can_fit
+                if self.curr_idx == self.context_length: # row is full
                     self.rows.append(self.curr_row)
                     self.curr_idx = 0
                     self.curr_row = torch.zeros(self.context_length)
-                else:
-                    self.curr_idx += num_to_accept
-                tokens_consumed += num_to_accept
-                remainder -= num_to_accept
-                self.curr_idx = 0
+                idx += can_fit
+                remainder -= can_fit
 
     def to_tensor(self, dtype=torch.float16) -> torch.Tensor:
         '''
