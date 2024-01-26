@@ -8,17 +8,20 @@ from lightning.pytorch.strategies import DDPStrategy
 from lightning.pytorch.profilers import AdvancedProfiler
 from pathlib import Path
 from sentencepiece import SentencePieceProcessor
+# from transformers import GPT2TokenizerFast
 
 from modules import CausalTransformer
 #!SECTION
 
 # SECTION: Dataloaders and LightningModules
 class Wikitext103Dataset(data.Dataset):
-    def __init__(self, tokens_path: str, pad_id: int):
+    def __init__(self, tokens_path: str, pad_id: int, vocab_size: int):
         super().__init__()
         self.data = torch.load(tokens_path)
         self.pad_id = pad_id
+        self.vocab_size = vocab_size
 
+    @property
     def context_length(self):
         return self.data.size(1)
 
@@ -26,19 +29,26 @@ class Wikitext103Dataset(data.Dataset):
         return self.data.size(0)
 
     def __getitem__(self, idx):
-        # TODO: Preprocess differently so that I don't need to fill the last label with 0
-        # TODO: Should the padding_mask be pre-computed? We could generate it in the constructor instead.
-        labels = torch.cat([self.data[idx][1:], torch.zeros(1)])
-        padding_mask = float('-inf') * self.data[idx].eq(self.pad_id)
-        padding_mask = torch.nan_to_num(padding_mask)
-        return self.data[idx], labels, padding_mask
-    
+        tokens = self.data[idx]
+        labels = tokens[1:]
+        labels = torch.cat([  # insert random token for last label
+            tokens[1:], 
+            torch.randint(0, self.vocab_size, (1,), dtype=labels.dtype)
+        ])
+
+        padding_mask = torch.zeros(self.context_length)
+        if idx < len(self.data) - 1:
+            padding_mask += float('-inf') * self.data[idx].eq(self.pad_id)
+            padding_mask = torch.nan_to_num(padding_mask)
+
+        return tokens, labels, padding_mask
 
 class Wikitext103Model(CausalTransformer):
     def _calculate_loss(self, batch, mode):
-        data, labels, padding_mask = batch
-        preds = self.forward(data, pad_mask=padding_mask) # shape = [bsz, context_len, vocab_size]
-        loss = F.cross_entropy(preds.view(-1, preds.size(-1)), labels.view(-1))
+        data, labels, mask = batch
+        data = data.int() # F.one_hot(data.long(), self.hparams.num_classes).to(dtype=self.dtype)
+        preds = self.forward(data, pad_mask=mask) # shape = [bsz, context_len, vocab_size]
+        loss = F.cross_entropy(preds.view(-1, preds.size(-1)), labels.view(-1).long())
         self.log("%s_loss" % mode, loss, sync_dist=True)  # TODO: a warning says we might want to use this, but it could cause communication overhead
         return loss
 
@@ -59,7 +69,9 @@ CHECKPOINT_PATH = "./"
 TRAIN_PATH = "./data/wikitext-103/wiki.train.tokens.tokenized.pt"
 VALID_PATH = "./data/wikitext-103/wiki.valid.tokens.tokenized.pt"
 TEST_PATH = "./data/wikitext-103/wiki.train.tokens.tokenized.pt"
-TOKENIZER_PATH = "./data/wikitext-103/tokenizer.model"
+TOKENIZER_PATH = "./bpe-tokenizer/tokenizer.model"
+# TOKENIZER_VOCAB = "./data/wikitext-103/tokenizer-vocab.json"
+# TOKENIZER_MERGES = "./data/wikitext-103/tokenizer-merges.txt"
 #!SECTION
         
 # SECTION: Training loop
@@ -75,25 +87,26 @@ if __name__ == "__main__":
                    ModelCheckpoint(save_weights_only=True, mode="min", monitor="val_loss"),
                    LearningRateMonitor(logging_interval='step')],
         accelerator="gpu",
-        devices=1,
+        devices=3,
         strategy=DDPStrategy(static_graph=True),
         precision="16-mixed",
-        max_steps=30, #max_epochs=100,
+        max_epochs=100,
         gradient_clip_val=0.1,
-        profiler=AdvancedProfiler(dirpath='./', filename='profile.log')
+        profiler=None # AdvancedProfiler(dirpath='./', filename='profile.log')
     )
     trainer.logger._default_hp_metric = None  # Optional logging argument that we don't need
 
     # Initialize tokenizer
     tokenizer = SentencePieceProcessor(model_file=TOKENIZER_PATH)
+    # tokenizer = GPT2TokenizerFast(vocab_file=TOKENIZER_VOCAB, merges_file=TOKENIZER_MERGES)
 
     # Create dataloaders
-    train_dataset = Wikitext103Dataset(TRAIN_PATH, tokenizer.pad_id())
-    val_dataset = Wikitext103Dataset(VALID_PATH, tokenizer.pad_id())
-    test_dataset = Wikitext103Dataset(TEST_PATH, tokenizer.pad_id())
+    train_dataset = Wikitext103Dataset(TRAIN_PATH, tokenizer.pad_id(), len(tokenizer))
+    val_dataset = Wikitext103Dataset(VALID_PATH, tokenizer.pad_id(), len(tokenizer))
+    test_dataset = Wikitext103Dataset(TEST_PATH, tokenizer.pad_id(), len(tokenizer))
 
     train_loader = data.DataLoader(
-        train_dataset, batch_size=52, shuffle=True, drop_last=True, num_workers=3, pin_memory=True # TODO: Crank up the batch size
+        train_dataset, batch_size=67, shuffle=True, drop_last=True, num_workers=4, pin_memory=True # TODO: Crank up the batch size
     )
     val_loader = data.DataLoader(val_dataset, batch_size=67, shuffle=False, drop_last=False, num_workers=4)
     test_loader = data.DataLoader(test_dataset, batch_size=67, shuffle=False, drop_last=False, num_workers=4)
@@ -108,8 +121,8 @@ if __name__ == "__main__":
             num_classes=len(tokenizer),
             max_context_len=1024,
             model_dim=128,
-            use_euclidean_attention=True,
-            learn_temperatures=True,
+            use_euclidean_attention=False,
+            learn_temperatures=False,
             positional_temperatures=False,
             num_heads=8,
             num_layers=16,
@@ -118,9 +131,8 @@ if __name__ == "__main__":
             activation_dropout=0.1,
             ffn_dim=4096,
             use_pos_encoding=True,
-            use_projection_bias=False,
-            warmup_updates=5,
-            lr_period_updates=2,
+            warmup_updates=16000,
+            lr_period_updates=270000,
             t_mult=2,
             warmup_end_lr=1.0,
             warmup_init_lr=1e-07,

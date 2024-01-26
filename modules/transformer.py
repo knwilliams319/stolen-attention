@@ -63,14 +63,14 @@ class CausalTransformer(L.LightningModule):
         # Causal attention mask which ignores tokens beyond the current position
         causal_mask = torch.triu(torch.ones(self.hparams.max_context_len, self.hparams.max_context_len), 1)
         causal_mask *= float('-inf')
-        causal_mask = torch.nan_to_num(causal_mask)
+        causal_mask = torch.nan_to_num(causal_mask)  # nan_to_num avoids operations that result in NaN instead of -inf
         self.register_buffer("causal_mask", causal_mask, persistent=False)
 
         # Input projection Layer
         # Using nn.Embedding allows us to skip one-hot encoding the token IDs, which introduces unnecessary data type conversions 
         self.input_proj = nn.Embedding(
             self.hparams.num_classes, 
-            self.hparams.model_dim, 
+            self.hparams.model_dim
         )
 
         # Positional encoding for sequences
@@ -113,21 +113,17 @@ class CausalTransformer(L.LightningModule):
     def _init_layers(self):
         # Input projection layer
         nn.init.xavier_uniform_(self.input_proj.weight)
-        if self.hparams.use_projection_bias:
-            nn.init.constant_(self.input_proj.bias, 0.0)
-        
+
         # Output projection layer
         nn.init.xavier_uniform_(self.output_proj.weight)
-        if self.hparams.use_projection_bias:
-            nn.init.constant_(self.output_proj.bias, 0.0)
 
     def forward(self, x, pad_mask=None):
         """
         Args:
-            x: Input features of shape [Batch, SeqLen, input_dim]
+            x: Input features of shape [Batch, SeqLen]
             pad_mask: Mask to apply on padding positions in the attention outputs (optional), shape is [Batch, SeqLen]
         """
-        _, seq_len, _ = x.size()
+        seq_len = x.size(1)
         mask = self.causal_mask[:seq_len, :seq_len]
         if pad_mask is not None: # If supplied, 'pad_mask' will contain -inf at pad positions which should also be ignored
             mask = pad_mask.unsqueeze(-1).expand(-1, -1, seq_len) + mask  # pad_mask.shape --> [Batch, SeqLen, SeqLen] in order to add our causal mask with shape [SeqLen, SeqLen]

@@ -77,7 +77,7 @@ class EuclideanAttention(nn.Module):
         attn_logits = -(Q_sq - 2*QK_dot + K_sq)
 
         if mask is not None:
-            attn_logits += mask.unsqueeze(1)  # add head dimension to mask so addition is properly broadcasted
+            attn_logits += mask.unsqueeze(1)  # add head dimension for proper broadcasting
 
         attention = self.softmax_fn(attn_logits, dim=-1)
         attention = self.dropout(attention)
@@ -160,9 +160,8 @@ class MultiheadAttention(nn.Module):
         attn_logits = torch.matmul(q, k.transpose(-2, -1))
         attn_logits = attn_logits / math.sqrt(d_k)
 
-        # TODO: is this the ordering in which fairseq applies their mask?
         if mask is not None:
-            attn_logits += mask.unsqueeze(1)  # add head dimension to mask
+            attn_logits += mask.unsqueeze(1)  # add head dimension for proper broadcasting
 
         attention = F.softmax(attn_logits, dim=-1)
         attention = self.dropout(attention)
