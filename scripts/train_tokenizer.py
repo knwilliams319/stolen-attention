@@ -28,7 +28,7 @@ def main():
     vocab_size = args.vocab_size
     char_cov = args.char_cov
     backend = args.backend
-    save_dir = arge.save_dir
+    save_dir = Path(args.save_dir).resolve()
 
     # Run the SentencePiece Trainer
     # LINK: https://github.com/google/sentencepiece#train-sentencepiece-model (may be useful if we ever want to add our own special tokens)
@@ -54,6 +54,7 @@ def main():
         model_dst = Path(input_path).parent / model_path.name
         vocab_dst = Path(input_path).parent / vocab_path.name
     else:
+        save_dir.mkdir(parents=True, exist_ok=True)
         model_dst = Path(save_dir) / model_path.name
         vocab_dst = Path(save_dir) / vocab_path.name
     model_path.rename(model_dst)
