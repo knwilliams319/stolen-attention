@@ -13,6 +13,7 @@ def main():
     parser.add_argument("--vocab-size", type=int, required=True, help="The maximum vocabulary size of the tokenizer to be trained")
     parser.add_argument("--char-cov", type=float, default=1.0, help="The proportion of characters covered by the model; 1.0 (default) is fine for languages with small character sets")
     parser.add_argument("--backend", type=str, default="bpe", help="The token-encoding algorithm to be used. Accepted values: [bpe (default), char, word, unigram]. If word is used, input sentences must be pre-tokenized")
+    parser.add_argument("--save-dir", type=str, required=False, help="Directory in which to save the tokenizer metadata. If omitted, they'll be placed in the same location as the input data.")
 
     # Parse the command-line arguments
     args = parser.parse_args()
@@ -27,6 +28,7 @@ def main():
     vocab_size = args.vocab_size
     char_cov = args.char_cov
     backend = args.backend
+    save_dir = Path(args.save_dir).resolve()
 
     # Run the SentencePiece Trainer
     # LINK: https://github.com/google/sentencepiece#train-sentencepiece-model (may be useful if we ever want to add our own special tokens)
@@ -47,9 +49,14 @@ def main():
     model_path = cwd / 'tokenizer.model'
     vocab_path = cwd / 'tokenizer.vocab'
 
-    # Move the files to the same location as the input data
-    model_dst = Path(input_path).parent / model_path.name
-    vocab_dst = Path(input_path).parent / vocab_path.name
+    # Move the files to the save directory
+    if not save_dir:
+        model_dst = Path(input_path).parent / model_path.name
+        vocab_dst = Path(input_path).parent / vocab_path.name
+    else:
+        save_dir.mkdir(parents=True, exist_ok=True)
+        model_dst = Path(save_dir) / model_path.name
+        vocab_dst = Path(save_dir) / vocab_path.name
     model_path.rename(model_dst)
     vocab_path.rename(vocab_dst)
 
