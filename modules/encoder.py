@@ -51,38 +51,45 @@ class EncoderBlock(nn.Module):
             )
         else:
             self.self_attn = MultiheadAttention(
-                input_dim, 
-                input_dim, 
-                num_heads, 
+                input_dim,
+                input_dim,
+                num_heads,
                 dropout=attn_dropout
             )
 
-        # Dropout module
-        self.dropout = nn.Dropout(dropout)
+        # Dropout modules
+        self.dropout_1 = nn.Dropout(dropout)
+        self.dropout_2 = nn.Dropout(dropout)
 
         # Two-layer MLP
         self.linear_net = nn.Sequential(
             nn.Linear(input_dim, dim_feedforward),
-            nn.ReLU(inplace=True),
+            nn.LeakyReLU(negative_slope=0.1, inplace=True),
             nn.Dropout(activation_dropout),
-            nn.Linear(dim_feedforward, input_dim),
-            self.dropout
+            nn.Linear(dim_feedforward, input_dim)
         )
 
     def forward(self, x, mask=None):
+        # TODO: Implement these once I start noticing convergence
+        # NOTE: These links seem to be parallel work on the same concept. I think the B2T Residual (1) has nicer graphics.
+        # LINK (1): Bottom-to-Top Residual Connection: https://arxiv.org/pdf/2206.00330v1.pdf
+        # LINK (2): ResiDual: https://arxiv.org/pdf/2304.14802.pdf
+        # These improve the performance of networks that use Pre-LayerNorm
+        
         # Normalize inputs and calculate attention
         residual = x
         x = self.input_norm(x)
         x = self.self_attn(x, mask=mask)
 
         # Add and norm
-        x = self.dropout(x)
+        x = self.dropout_1(x)
         x += residual
         residual = x
         x = self.ffn_norm(x)
 
         # MLP plus residual connection
         x = self.linear_net(x)
+        x = self.dropout_2(x)
         x += residual
         return x
 #!SECTION
