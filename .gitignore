@@ -164,7 +164,7 @@ cython_debug/
 data/
 
 # PyTorch Lightning logging and checkpointing
-lightning_logs/
+experiments/
 
 # Debugging in VsCode
 .vscode/
