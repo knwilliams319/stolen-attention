@@ -20,7 +20,7 @@ class CausalTransformer(L.LightningModule):
         num_classes,
         max_context_len=1024,
         model_dim=128,
-        use_euclidean_attention=False,
+        attention_norm=None,
         learn_temperatures=False,
         positional_temperatures=False,
         lr=0.0001,
@@ -104,7 +104,7 @@ class CausalTransformer(L.LightningModule):
             attn_dropout=self.hparams.attn_dropout,
             activation_dropout=self.hparams.activation_dropout,
             max_context_len=self.hparams.max_context_len,
-            use_euclidean_attention=self.hparams.use_euclidean_attention,
+            attention_norm=self.hparams.attention_norm,
             learn_temperatures=self.hparams.learn_temperatures,
             positional_temperatures=self.hparams.positional_temperatures
         )

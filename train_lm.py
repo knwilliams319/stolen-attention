@@ -130,7 +130,7 @@ class Wikitext103Model(CausalTransformer):
 # SECTION: Training parameters
 # TODO: make these CLI arguments instead of constants 
 CHECKPOINT_BASE = "./experiments/embed_dim_64"
-EXPERIMENT = "euc-positional"
+EXPERIMENT = "base-positional"
 CHECKPOINT_DIR = CHECKPOINT_BASE + '/' + EXPERIMENT
 
 TRAIN_PATH = "./data/wikitext-103/unigram.wiki.train.tokens.tokenized.pt"
@@ -179,9 +179,9 @@ if __name__ == "__main__":
             LearningRateMonitor(logging_interval='step')
         ],
         accelerator="gpu",
-        devices=[1, 2],            # TODO: Change this back to 3 (David was running an experiment on GPU0)
+        devices=[0, 1, 2],         # TODO: Change this back to 3 (David was running an experiment on GPU0)
         strategy="ddp",
-        precision="16-mixed",      # TODO: Use 32-true?
+        precision="32-true",      # TODO: Use 32-true?
         max_epochs=25,
         gradient_clip_val=1.0,     # TODO: change this back to a low value like 1.0 or 0.1
         benchmark=False,           # this can't be used when deterministic=True
@@ -201,7 +201,7 @@ if __name__ == "__main__":
     val_dataset = Wikitext103Dataset(VALID_PATH, tokenizer.pad_id(), len(tokenizer))
     test_dataset = Wikitext103Dataset(TEST_PATH, tokenizer.pad_id(), len(tokenizer))
 
-    BATCH_SIZE = 64  # NOTE: in '16-mixed', we can use 80
+    BATCH_SIZE = 43  # NOTE: in '16-mixed', we can use 80
     train_loader = data.DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, drop_last=True, num_workers=3, pin_memory=True)
     val_loader = data.DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, drop_last=False, num_workers=3)
     test_loader = data.DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, drop_last=False, num_workers=3)
@@ -216,7 +216,7 @@ if __name__ == "__main__":
             num_classes=len(tokenizer),
             max_context_len=1024,
             model_dim=64,
-            use_euclidean_attention=True,
+            attention_norm=None,
             learn_temperatures=True,
             positional_temperatures=True,
             num_heads=8,

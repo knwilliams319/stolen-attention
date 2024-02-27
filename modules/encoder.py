@@ -1,7 +1,7 @@
 # SECTION: Necessary imports
 import torch.nn as nn
 
-from .attention import MultiheadAttention, EuclideanAttention
+from .attention import DotProductAttention, ManhattanAttention, EuclideanAttention
 #!SECTION
 
 # SECTION: A single Encoder Block
@@ -14,7 +14,7 @@ class EncoderBlock(nn.Module):
                  attn_dropout=0.1,
                  activation_dropout=0.1,
                  max_context_len=-1,
-                 use_euclidean_attention=False,
+                 attention_norm=None,
                  learn_temperatures=False,
                  positional_temperatures=False,
                  ):
@@ -39,7 +39,27 @@ class EncoderBlock(nn.Module):
         self.ffn_norm = nn.LayerNorm(input_dim)
 
         # Attention layer
-        if use_euclidean_attention:
+        if attention_norm is None:
+            self.self_attn = DotProductAttention(
+                input_dim,
+                input_dim,
+                num_heads,
+                max_context_len,
+                dropout=attn_dropout,
+                learn_temperatures=learn_temperatures,
+                positional_temperatures=positional_temperatures
+            )
+        elif attention_norm == 1:
+            self.self_attn = ManhattanAttention(
+                input_dim,
+                input_dim,
+                num_heads,
+                max_context_len,
+                dropout=attn_dropout,
+                learn_temperatures=learn_temperatures,
+                positional_temperatures=positional_temperatures
+            )
+        elif attention_norm == 2:
             self.self_attn = EuclideanAttention(
                 input_dim,
                 input_dim,
@@ -50,12 +70,7 @@ class EncoderBlock(nn.Module):
                 positional_temperatures=positional_temperatures
             )
         else:
-            self.self_attn = MultiheadAttention(
-                input_dim,
-                input_dim,
-                num_heads,
-                dropout=attn_dropout
-            )
+            raise ValueError(f"Attention norm {attention_norm} is not supported!")
 
         # Dropout modules
         self.dropout_1 = nn.Dropout(dropout)
