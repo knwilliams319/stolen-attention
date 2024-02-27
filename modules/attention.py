@@ -28,8 +28,11 @@ class EuclideanAttention(nn.Module):
 
         self.dropout = nn.Dropout(dropout)
 
+        #self.q_layernorm = nn.LayerNorm(self.head_dim)
+        #self.k_layernorm = nn.LayerNorm(self.head_dim)
+
         # Stack all weight matrices 1...h together for efficiency
-        self.qkv_proj = nn.Linear(input_dim, 3 * embed_dim)
+        self.qkv_proj = nn.Linear(input_dim, 3 * embed_dim, bias=False)  # PaLM doesn't use bias terms here
         self.o_proj = nn.Linear(embed_dim, embed_dim)
 
         self._reset_parameters()
@@ -42,6 +45,12 @@ class EuclideanAttention(nn.Module):
             else:
                 self.temperatures = nn.Parameter(torch.Tensor(1), requires_grad=True)
             nn.init.uniform_(self.temperatures, 0.95, 1.05) # draw uniformly around 1, which is technically the temperature for F.softmax
+    
+    def init_modules(self, sigma_main, sigma_proj):
+        nn.init.normal_(self.qkv_proj.weight, mean=0, std=sigma_main)
+        # nn.init.constant_(self.qkv_proj.bias, 0)
+        nn.init.normal_(self.o_proj.weight, mean=0, std=sigma_proj)
+        nn.init.constant_(self.o_proj.bias, 0)
 
     def forward(self, x, mask=None, return_attention=False):
         batch_size, seq_length, embed_dim = x.size()
@@ -51,6 +60,11 @@ class EuclideanAttention(nn.Module):
         qkv = qkv.reshape(batch_size, seq_length, self.num_heads, 3 * self.head_dim)
         qkv = qkv.permute(0, 2, 1, 3)  # [Batch, Head, SeqLen, Dims]
         q, k, v = qkv.chunk(3, dim=-1)
+
+        # Apply QK-Layernorm
+        # LINK: https://arxiv.org/pdf/2309.14322.pdf
+        #q = self.q_layernorm(q)
+        #k = self.k_layernorm(k)
 
         # Determine value outputs
         values, attention = self.negative_euclidean(q, k, v, mask=mask)
@@ -124,9 +138,18 @@ class MultiheadAttention(nn.Module):
 
         self.dropout = nn.Dropout(dropout)
 
+        # self.q_layernorm = nn.LayerNorm(self.head_dim)
+        # self.k_layernorm = nn.LayerNorm(self.head_dim)
+
         # Stack all weight matrices 1...h together for efficiency
-        self.qkv_proj = nn.Linear(input_dim, 3 * embed_dim)
+        self.qkv_proj = nn.Linear(input_dim, 3 * embed_dim, bias=False)  # PaLM doesn't use bias terms here
         self.o_proj = nn.Linear(embed_dim, embed_dim)
+
+    def init_modules(self, sigma_main, sigma_proj):
+        nn.init.normal_(self.qkv_proj.weight, mean=0, std=sigma_main)
+        # nn.init.constant_(self.qkv_proj.bias, 0)
+        nn.init.normal_(self.o_proj.weight, mean=0, std=sigma_proj)
+        nn.init.constant_(self.o_proj.bias, 0)
 
     def forward(self, x, mask=None, return_attention=False):
         batch_size, seq_length, embed_dim = x.size()
@@ -136,6 +159,11 @@ class MultiheadAttention(nn.Module):
         qkv = qkv.reshape(batch_size, seq_length, self.num_heads, 3 * self.head_dim)
         qkv = qkv.permute(0, 2, 1, 3)  # [Batch, Head, SeqLen, Dims]
         q, k, v = qkv.chunk(3, dim=-1)
+
+        # Apply QK-Layernorm
+        # LINK: https://arxiv.org/pdf/2309.14322.pdf
+        # q = self.q_layernorm(q)
+        # k = self.k_layernorm(k)
 
         # Determine value outputs
         values, attention = self.scaled_dot_product(q, k, v, mask=mask)

@@ -4,6 +4,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 import lightning as L
+import math
 
 from .pos_encoding import PositionalEncoding
 from .encoder import TransformerEncoder
@@ -77,6 +78,7 @@ class CausalTransformer(L.LightningModule):
             self.hparams.num_classes, 
             self.hparams.model_dim
         )
+        self.embed_scale = math.sqrt(self.hparams.model_dim)
 
         # Positional encoding for sequences
         if self.hparams.use_pos_encoding:
@@ -118,13 +120,21 @@ class CausalTransformer(L.LightningModule):
     def _init_layers(self):
         # NOTE: Initializing linear layers like this overrides any layer-specific initialization, as layers' constructors are called
         #       in self._create_model()
-        for m in self.modules():
-            if isinstance(m, nn.Linear):
-                nn.init.kaiming_normal_(m.weight, mode='fan_in', nonlinearity='leaky_relu')
-                if m.bias is not None:
-                    nn.init.constant_(m.bias, 0)  # set bias to 0 initially
-            elif isinstance(m, nn.Embedding):
-                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='leaky_relu')  # doesn't seem like it makes sense to use fan_in for the embedding
+        # LINK: Scaled Initialization from Spike No More: https://arxiv.org/pdf/2312.16903.pdf#page10
+        sigma_main = math.sqrt(2/(5*self.hparams.model_dim))
+        sigma_proj = sigma_main / math.sqrt(2*self.hparams.num_layers)
+
+        nn.init.normal_(self.input_proj.weight, mean=0, std=sigma_main)
+        nn.init.normal_(self.output_proj.weight, mean=0, std=sigma_main)
+        self.transformer.init_layers(sigma_main, sigma_proj)
+
+        # for m in self.modules():
+        #     if isinstance(m, nn.Linear):
+        #         nn.init.kaiming_normal_(m.weight, mode='fan_in', nonlinearity='leaky_relu')
+        #         if m.bias is not None:
+        #             nn.init.constant_(m.bias, 0)  # set bias to 0 initially
+        #     elif isinstance(m, nn.Embedding):
+        #         nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='leaky_relu')  # doesn't seem like it makes sense to use fan_in for the embedding
 
     def forward(self, x, pad_mask=None):
         """
@@ -137,8 +147,9 @@ class CausalTransformer(L.LightningModule):
         if pad_mask is not None: # If supplied, 'pad_mask' will contain -inf at pad positions which should also be ignored
             mask = pad_mask.unsqueeze(-1).expand(-1, -1, seq_len) + mask  # pad_mask.shape --> [Batch, SeqLen, SeqLen] in order to add our causal mask with shape [SeqLen, SeqLen]
 
-        # Project inputs, apply positional encoding, and apply dropout
+        # Project inputs, scale embeddings, apply positional encoding, and apply dropout
         x = self.input_proj(x)
+        x *= self.embed_scale # Original Vaswani paper says they scale embedding layers' weights by sqrt(model_dim). Spike No More says it is crucial to avoiding a type of gradient explosion. 
         x = self.positional_encoding(x)
         x = self.dropout(x)
 
@@ -200,18 +211,24 @@ class CausalTransformer(L.LightningModule):
             lr=self.lr,
             betas=(0.9, 0.99),
             eps=1e-6,
-            weight_decay=0.0
+            weight_decay=1e-4
         )
+        # optimizer = optim.AdamW(
+        #     param_split,
+        #     lr=1e-5, # to match warmup_init_lr
+        #     betas=(0.9, 0.95),
+        #     weight_decay=1e-4
+        # )
 
         # We don't return the lr scheduler because we need to apply it per iteration, not per epoch
         # self.lr_scheduler = CosineWarmupRestartScheduler(
         #     optimizer,
-        #     warmup_updates=self.hparams.warmup_updates,
-        #     warmup_init_lr=self.hparams.warmup_init_lr,
-        #     warmup_end_lr=self.hparams.warmup_end_lr,
-        #     min_lr=self.hparams.min_lr,
-        #     lr_period_updates=self.hparams.lr_period_updates,
-        #     t_mult=self.hparams.t_mult
+        #     warmup_updates=5e3,
+        #     warmup_init_lr=1e-5,
+        #     warmup_end_lr=self.hparams.lr,
+        #     min_lr=1e-5,
+        #     lr_period_updates=int(1e5 - 5e3),
+        #     t_mult=1
         # )
         self.lr_scheduler = REXScheduler(
             optimizer,
