@@ -5,13 +5,10 @@ import torch.utils.data as data
 import lightning as L
 from lightning.pytorch.tuner.tuning import Tuner
 from lightning.pytorch.callbacks import ModelCheckpoint, ModelSummary, LearningRateMonitor
-from lightning.pytorch.strategies import DDPStrategy
 from lightning.pytorch.profilers import AdvancedProfiler
 from pathlib import Path
 from sentencepiece import SentencePieceProcessor
-from torch.distributed.algorithms.ddp_comm_hooks.default_hooks import fp16_compress_hook
 from lightning.pytorch.loggers import CSVLogger
-import shutil
 # from transformers import GPT2TokenizerFast
 
 from modules import CausalTransformer
@@ -30,19 +27,24 @@ class Wikitext103Dataset(data.Dataset):
         return self.data.size(1)
 
     def __len__(self):
-        return self.data.size(0)
+        # Skip last batch, which is the only incomplete one (due to packing)
+        return self.data.size(0) - 1 
 
     def __getitem__(self, idx):
         tokens = self.data[idx]
-        labels = torch.cat([  # insert random token for last label
+        padding_mask = torch.zeros(self.context_length)
+        labels = torch.cat([
             tokens[1:],
-            torch.randint(0, self.vocab_size, (1,), dtype=tokens.dtype)
+            torch.tensor([self.data[idx+1][0]], dtype=tokens.dtype)
         ])
 
-        padding_mask = torch.zeros(self.context_length)
-        if idx == len(self.data) - 1: # due to packing pretraining tokens, only the last index may include pad tokens
-            padding_mask += float('-inf') * self.data[idx].eq(self.pad_id)
-            padding_mask = torch.nan_to_num(padding_mask)
+        # due to packing pretraining tokens, only the last index may include pad tokens
+        # labels = torch.cat([  # insert random token for last label
+        #     tokens[1:],
+        #     torch.randint(0, self.vocab_size, (1,), dtype=tokens.dtype)
+        # ])
+        # padding_mask += float('-inf') * tokens.eq(self.pad_id)
+        # padding_mask = torch.nan_to_num(padding_mask)
 
         return tokens, labels, padding_mask
 
@@ -59,19 +61,26 @@ class Wikitext103Model(CausalTransformer):
         self.log(
             "train_loss",
             loss, 
-            sync_dist=True,   # this doesn't seem to impact training time, likely because we have only 3 devices
+            sync_dist=True,       # this doesn't seem to impact training time, likely because we have only 3 devices
             on_step=True,
             on_epoch=True,
             rank_zero_only=True,  # this seems to slightly speed up training
             prog_bar=True
         )
 
-        # TODO: delete this gradient calculation code if it's too slow
+        # calculate norms for total update and layers' updates
         total_norm = 0.0
-        for p in self.parameters():
+        layer_grad_norms = [0.0] * self.hparams.num_layers
+        for name, p in self.named_parameters():
             if p.grad is not None:
-                param_norm = p.grad.detach().data.norm(2)
-                total_norm += param_norm.item() ** 2
+                param_norm = p.grad.detach().data.norm(2).item() ** 2
+                total_norm += param_norm
+                for i in range(self.hparams.num_layers):
+                    if name.startswith(f'transformer.layers.{i}'):
+                        layer_grad_norms[i] += param_norm
+                        break
+        for norm in layer_grad_norms:
+            norm = norm ** (1. / 2)
         total_norm = total_norm ** (1. / 2)
         self.log(
             "grad_norm",
@@ -82,6 +91,17 @@ class Wikitext103Model(CausalTransformer):
             rank_zero_only=True,
             prog_bar=True
         )
+        for i, norm in enumerate(layer_grad_norms):
+            self.log(
+            f"layer_norm_{i}",
+            norm,
+            sync_dist=True,
+            on_step=True,
+            on_epoch=False,
+            rank_zero_only=True,
+            prog_bar=False
+        )
+            
         return loss
 
     def validation_step(self, batch, batch_idx):
@@ -92,7 +112,7 @@ class Wikitext103Model(CausalTransformer):
             sync_dist=True,
             on_step=False,
             on_epoch=True,
-            rank_zero_only=True
+            rank_zero_only=False
         )
 
     def test_step(self, batch, batch_idx):
@@ -103,14 +123,14 @@ class Wikitext103Model(CausalTransformer):
             sync_dist=True,
             on_step=False,
             on_epoch=True,
-            rank_zero_only=True
+            rank_zero_only=False
         ) 
 #!SECTION
   
 # SECTION: Training parameters
 # TODO: make these CLI arguments instead of constants 
-CHECKPOINT_BASE = "./experiments/embed_dim_256"
-EXPERIMENT = "base"
+CHECKPOINT_BASE = "./experiments/embed_dim_64"
+EXPERIMENT = "euc-positional"
 CHECKPOINT_DIR = CHECKPOINT_BASE + '/' + EXPERIMENT
 
 TRAIN_PATH = "./data/wikitext-103/unigram.wiki.train.tokens.tokenized.pt"
@@ -159,15 +179,11 @@ if __name__ == "__main__":
             LearningRateMonitor(logging_interval='step')
         ],
         accelerator="gpu",
-        devices=3,
-        strategy=DDPStrategy(
-            static_graph=True,
-            gradient_as_bucket_view=True,
-            ddp_comm_hook=fp16_compress_hook
-        ),
-        precision="32-true",       # TODO: Change this back to '16-mixed'
-        max_epochs=100,
-        gradient_clip_val=2.0,     # TODO: change this back to a low value like 1.0 or 0.1
+        devices=[1, 2],            # TODO: Change this back to 3 (David was running an experiment on GPU0)
+        strategy="ddp",
+        precision="16-mixed",      # TODO: Use 32-true?
+        max_epochs=25,
+        gradient_clip_val=1.0,     # TODO: change this back to a low value like 1.0 or 0.1
         benchmark=False,           # this can't be used when deterministic=True
         profiler=None,             # AdvancedProfiler(dirpath='./', filename='profile.log'),
         limit_train_batches=None,  # TODO: change this back to None
@@ -185,9 +201,7 @@ if __name__ == "__main__":
     val_dataset = Wikitext103Dataset(VALID_PATH, tokenizer.pad_id(), len(tokenizer))
     test_dataset = Wikitext103Dataset(TEST_PATH, tokenizer.pad_id(), len(tokenizer))
 
-    # TODO: Why is 32 so much faster in 32-true than a higher batch size? I was able to turn it up as high as 80, but this slowed training down to over an hour per epoch...
-    #       Does PyTorchLightning somehow accumulate batches for you if you use a higher batch size than actually fits on the device?
-    BATCH_SIZE = 32  # NOTE: in '16-mixed', we can use 80
+    BATCH_SIZE = 64  # NOTE: in '16-mixed', we can use 80
     train_loader = data.DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, drop_last=True, num_workers=3, pin_memory=True)
     val_loader = data.DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, drop_last=False, num_workers=3)
     test_loader = data.DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, drop_last=False, num_workers=3)
@@ -201,24 +215,24 @@ if __name__ == "__main__":
         model = Wikitext103Model(
             num_classes=len(tokenizer),
             max_context_len=1024,
-            model_dim=256,
-            use_euclidean_attention=False,
-            learn_temperatures=False,
-            positional_temperatures=False,
+            model_dim=64,
+            use_euclidean_attention=True,
+            learn_temperatures=True,
+            positional_temperatures=True,
             num_heads=8,
-            num_layers=16,
+            num_layers=8,
             dropout=0.0,
             attn_dropout=0.0,
             activation_dropout=0.0,
             ffn_dim=2048,
             use_pos_encoding=True,
-            lr=3e-4,                                                             # used for AdamW/Lion initialization
-            num_steps=trainer.max_epochs*len(train_loader)/trainer.num_devices,  # used for REX Scheduler
-            temperature_lr_scale=0.1                                             # sets lr for temperature params to scale*lr
+            lr=3e-4,                                                              # used for AdamW/Lion initialization
+            num_steps=trainer.max_epochs*len(train_loader)/trainer.num_devices,   # used for REX Scheduler
+            temperature_lr_scale=0.1                                              # sets lr for temperature params to scale*lr
         )
-        trainer.validate(model=model, dataloaders=val_loader)
+        #trainer.validate(model=model, dataloaders=val_loader)
         trainer.fit(model, train_loader, val_loader)
-        trainer.validate(model=model, dataloaders=val_loader)
+        #trainer.validate(model=model, dataloaders=val_loader)
 
         #tuner = Tuner(trainer)
         #tuner.lr_find(
