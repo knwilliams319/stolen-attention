@@ -172,8 +172,6 @@ class ManhattanAttention(AttentionMechanism):
         Logits will be caluclated via Manhattan Distance (L1 Norm).
         '''
         # Calculate batched pairwise negative manhattan distance between embeddings in Q, K
-        # TODO: In my colab, torch.cdist(p=1) is faster than below. Will this allow us to push the batch size
-        #       to as large, though? Or will I observe the same problem as torch.cdist for EuclideanDistance?
         q = q.unsqueeze(3)
         k = k.unsqueeze(2)
         attn_logits = -torch.sum(torch.abs(q-k), dim=-1) # negate distances so smaller ones have larger weights
