@@ -38,7 +38,7 @@ def main():
         dir_to_tokenize = Path(dir_to_tokenize)
         assert dir_to_tokenize != tokenizer_dir, "To tokenize files in the same directory as the tokenizer, omit the --dir-to-tokenize argument."
         assert dir_to_tokenize.exists(), "The value of the --dir-to-tokenize argument points to a non-existent directory!"
-        files_to_tokenize = [file for file in dir_to_tokenize.iterdir()]
+        files_to_tokenize = [file for file in dir_to_tokenize.iterdir() if file.suffix != '.pt']
 
     # Ensure that if --pack-examples is passed, so is a positive value for --example-length
     pack_examples = args.pack_examples

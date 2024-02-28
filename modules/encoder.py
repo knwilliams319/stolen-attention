@@ -1,7 +1,7 @@
 # SECTION: Necessary imports
 import torch.nn as nn
 
-from .attention import MultiheadAttention, EuclideanAttention
+from .attention import DotProductAttention, ManhattanAttention, EuclideanAttention
 #!SECTION
 
 # SECTION: A single Encoder Block
@@ -14,7 +14,7 @@ class EncoderBlock(nn.Module):
                  attn_dropout=0.1,
                  activation_dropout=0.1,
                  max_context_len=-1,
-                 use_euclidean_attention=False,
+                 attention_norm=None,
                  learn_temperatures=False,
                  positional_temperatures=False,
                  ):
@@ -39,7 +39,27 @@ class EncoderBlock(nn.Module):
         self.ffn_norm = nn.LayerNorm(input_dim)
 
         # Attention layer
-        if use_euclidean_attention:
+        if attention_norm is None:
+            self.self_attn = DotProductAttention(
+                input_dim,
+                input_dim,
+                num_heads,
+                max_context_len,
+                dropout=attn_dropout,
+                learn_temperatures=learn_temperatures,
+                positional_temperatures=positional_temperatures
+            )
+        elif attention_norm == 1:
+            self.self_attn = ManhattanAttention(
+                input_dim,
+                input_dim,
+                num_heads,
+                max_context_len,
+                dropout=attn_dropout,
+                learn_temperatures=learn_temperatures,
+                positional_temperatures=positional_temperatures
+            )
+        elif attention_norm == 2:
             self.self_attn = EuclideanAttention(
                 input_dim,
                 input_dim,
@@ -50,39 +70,49 @@ class EncoderBlock(nn.Module):
                 positional_temperatures=positional_temperatures
             )
         else:
-            self.self_attn = MultiheadAttention(
-                input_dim, 
-                input_dim, 
-                num_heads, 
-                dropout=attn_dropout
-            )
+            raise ValueError(f"Attention norm {attention_norm} is not supported!")
 
-        # Dropout module
-        self.dropout = nn.Dropout(dropout)
+        # Dropout modules
+        self.dropout_1 = nn.Dropout(dropout)
+        self.dropout_2 = nn.Dropout(dropout)
 
         # Two-layer MLP
-        self.linear_net = nn.Sequential(
-            nn.Linear(input_dim, dim_feedforward),
-            nn.ReLU(inplace=True),
-            nn.Dropout(activation_dropout),
-            nn.Linear(dim_feedforward, input_dim),
-            self.dropout
-        )
+        self.up_projection = nn.Linear(input_dim, dim_feedforward)
+        self.act = nn.GELU() #nn.LeakyReLU(negative_slope=0.1, inplace=True)
+        self.act_dropout = nn.Dropout(activation_dropout)
+        self.down_projection = nn.Linear(dim_feedforward, input_dim)
+
+    def init_modules(self, sigma_main, sigma_proj):
+        nn.init.normal_(self.up_projection.weight, mean=0, std=sigma_main)
+        nn.init.constant_(self.up_projection.bias, 0)
+        nn.init.normal_(self.down_projection.weight, mean=0, std=sigma_proj)
+        nn.init.constant_(self.down_projection.bias, 0)
+        self.self_attn.init_modules(sigma_main, sigma_proj)
 
     def forward(self, x, mask=None):
+        # TODO: Implement these once I start noticing convergence?
+        # NOTE: These links seem to be parallel work on the same concept. I think the B2T Residual (1) has nicer graphics.
+        # LINK (1): Bottom-to-Top Residual Connection: https://arxiv.org/pdf/2206.00330v1.pdf
+        # LINK (2): ResiDual: https://arxiv.org/pdf/2304.14802.pdf
+        # These improve the performance of networks that use Pre-LayerNorm
+        
         # Normalize inputs and calculate attention
         residual = x
         x = self.input_norm(x)
         x = self.self_attn(x, mask=mask)
 
         # Add and norm
-        x = self.dropout(x)
+        x = self.dropout_1(x)
         x += residual
         residual = x
         x = self.ffn_norm(x)
 
         # MLP plus residual connection
-        x = self.linear_net(x)
+        x = self.up_projection(x)
+        x = self.act(x)
+        x = self.act_dropout(x)
+        x = self.down_projection(x)
+        x = self.dropout_2(x)
         x += residual
         return x
 #!SECTION
@@ -113,4 +143,9 @@ class TransformerEncoder(nn.Module):
             attention_maps.append(attn_map)
             x = layer(x)
         return attention_maps
+    
+    def init_layers(self, sigma_main, sigma_proj):
+        for layer in self.layers:
+            layer.init_modules(sigma_main, sigma_proj)
 #!SECTION
+            

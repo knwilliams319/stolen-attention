@@ -4,28 +4,28 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 import lightning as L
+import math
 
 from .pos_encoding import PositionalEncoding
 from .encoder import TransformerEncoder
-from .lr_scheduler import CosineWarmupRestartScheduler
+from .lr_scheduler import CosineWarmupRestartScheduler, REXScheduler
+from .optimizers import Lion
 #!SECTION
 
 # SECTION: A Decoder-Only Transformer Lightning Module for Causal Language Modeling
+# TODO: Add the final list of arguments to the docstring
 class CausalTransformer(L.LightningModule):
     def __init__(
         self,
         num_classes,
         max_context_len=1024,
         model_dim=128,
-        use_euclidean_attention=False,
+        attention_norm=None,
         learn_temperatures=False,
         positional_temperatures=False,
-        warmup_updates=16000,
-        warmup_init_lr=1e-07,
-        warmup_end_lr=1.0,
-        min_lr=0.0001,
-        lr_period_updates=270000,
-        t_mult=2,
+        lr=0.0001,
+        num_steps=-1,
+        temperature_lr_scale=1.0,
         num_heads=8,
         num_layers=16,
         dropout=0.3,
@@ -60,6 +60,12 @@ class CausalTransformer(L.LightningModule):
         self._init_layers()
 
     def _create_model(self):
+        # Store learning rate in a state variable for learning rate tuning
+        self.lr = self.hparams.lr
+
+        # Check hparams num steps
+        assert self.hparams.num_steps > 0
+
         # Causal attention mask which ignores tokens beyond the current position
         causal_mask = torch.triu(torch.ones(self.hparams.max_context_len, self.hparams.max_context_len), 1)
         causal_mask *= float('-inf')
@@ -72,6 +78,7 @@ class CausalTransformer(L.LightningModule):
             self.hparams.num_classes, 
             self.hparams.model_dim
         )
+        self.embed_scale = math.sqrt(self.hparams.model_dim)
 
         # Positional encoding for sequences
         if self.hparams.use_pos_encoding:
@@ -97,7 +104,7 @@ class CausalTransformer(L.LightningModule):
             attn_dropout=self.hparams.attn_dropout,
             activation_dropout=self.hparams.activation_dropout,
             max_context_len=self.hparams.max_context_len,
-            use_euclidean_attention=self.hparams.use_euclidean_attention,
+            attention_norm=self.hparams.attention_norm,
             learn_temperatures=self.hparams.learn_temperatures,
             positional_temperatures=self.hparams.positional_temperatures
         )
@@ -111,11 +118,23 @@ class CausalTransformer(L.LightningModule):
         )
 
     def _init_layers(self):
-        # Input projection layer
-        nn.init.xavier_uniform_(self.input_proj.weight)
+        # NOTE: Initializing linear layers like this overrides any layer-specific initialization, as layers' constructors are called
+        #       in self._create_model()
+        # LINK: Scaled Initialization from Spike No More: https://arxiv.org/pdf/2312.16903.pdf#page10
+        sigma_main = math.sqrt(2/(5*self.hparams.model_dim))
+        sigma_proj = sigma_main / math.sqrt(2*self.hparams.num_layers)
 
-        # Output projection layer
-        nn.init.xavier_uniform_(self.output_proj.weight)
+        nn.init.normal_(self.input_proj.weight, mean=0, std=sigma_main)
+        nn.init.normal_(self.output_proj.weight, mean=0, std=sigma_main)
+        self.transformer.init_layers(sigma_main, sigma_proj)
+
+        # for m in self.modules():
+        #     if isinstance(m, nn.Linear):
+        #         nn.init.kaiming_normal_(m.weight, mode='fan_in', nonlinearity='leaky_relu')
+        #         if m.bias is not None:
+        #             nn.init.constant_(m.bias, 0)  # set bias to 0 initially
+        #     elif isinstance(m, nn.Embedding):
+        #         nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='leaky_relu')  # doesn't seem like it makes sense to use fan_in for the embedding
 
     def forward(self, x, pad_mask=None):
         """
@@ -128,8 +147,9 @@ class CausalTransformer(L.LightningModule):
         if pad_mask is not None: # If supplied, 'pad_mask' will contain -inf at pad positions which should also be ignored
             mask = pad_mask.unsqueeze(-1).expand(-1, -1, seq_len) + mask  # pad_mask.shape --> [Batch, SeqLen, SeqLen] in order to add our causal mask with shape [SeqLen, SeqLen]
 
-        # Project inputs, apply positional encoding, and apply dropout
+        # Project inputs, scale embeddings, apply positional encoding, and apply dropout
         x = self.input_proj(x)
+        x *= self.embed_scale # Original Vaswani paper says they scale embedding layers' weights by sqrt(model_dim). Spike No More says it is crucial to avoiding a type of gradient explosion. 
         x = self.positional_encoding(x)
         x = self.dropout(x)
 
@@ -153,25 +173,66 @@ class CausalTransformer(L.LightningModule):
         return attention_maps
 
     def configure_optimizers(self):
+        # Determine the learning rate for the temperatures' parameter group
+        temperature_lr = self.lr * self.hparams.temperature_lr_scale
+
+        # Split the model's params into temperature and non-temperature groups
+        all_params = self.named_parameters()
+        base_params = []
+        temperature_params = []
+        for name, param in all_params:  # objects generated by self.named_parameters() are 2-element tuples (str, torch.Tensor)
+            if name.endswith('self_attn.temperatures'):
+                temperature_params.append(param)
+            else:
+                base_params.append(param)
+
+        # Create parameter split dictionary object to pass to optimizers
+        param_split = [
+            {'params': base_params},
+            {'params': temperature_params, 'lr': temperature_lr}
+        ]
+
+        # Initialize the optimizer
         # This seems to be the closest to fairseq's NAGOptimizer (https://github.com/facebookresearch/fairseq/blob/main/fairseq/optim/nag.py)
-        # TODO: Allow momentum and weight_decay to be set at the command line, but with the defaults below to match fairseq
-        optimizer = optim.SGD(
-            self.parameters(), 
-            lr=self.hparams.warmup_end_lr,
-            momentum=0.99,
-            weight_decay=0.0,
-            nesterov=True
+        # optimizer = optim.SGD(
+        #     self.parameters(), 
+        #     lr=self.lr,
+        #     momentum=0.99,
+        #     weight_decay=0.0,
+        #     nesterov=True
+        # )
+        # optimizer = Lion(
+        #     param_split,
+        #     lr=self.lr, # because 'lr' wasn't set for base_params in 'param_split', it will use this value by default
+        #     weight_decay=0.00
+        # )
+        optimizer = optim.RAdam(
+            param_split,
+            lr=self.lr,
+            betas=(0.9, 0.99),
+            eps=1e-6,
+            weight_decay=1e-4
         )
+        # optimizer = optim.AdamW(
+        #     param_split,
+        #     lr=1e-5, # to match warmup_init_lr
+        #     betas=(0.9, 0.95),
+        #     weight_decay=1e-4
+        # )
 
         # We don't return the lr scheduler because we need to apply it per iteration, not per epoch
-        self.lr_scheduler = CosineWarmupRestartScheduler(
+        # self.lr_scheduler = CosineWarmupRestartScheduler(
+        #     optimizer,
+        #     warmup_updates=5e3,
+        #     warmup_init_lr=1e-5,
+        #     warmup_end_lr=self.hparams.lr,
+        #     min_lr=1e-5,
+        #     lr_period_updates=int(1e5 - 5e3),
+        #     t_mult=1
+        # )
+        self.lr_scheduler = REXScheduler(
             optimizer,
-            warmup_updates=self.hparams.warmup_updates,
-            warmup_init_lr=self.hparams.warmup_init_lr,
-            warmup_end_lr=self.hparams.warmup_end_lr,
-            min_lr=self.hparams.min_lr,
-            lr_period_updates=self.hparams.lr_period_updates,
-            t_mult=self.hparams.t_mult
+            num_steps=self.hparams.num_steps
         )
         return optimizer
 
