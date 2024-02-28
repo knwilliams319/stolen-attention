@@ -17,3 +17,4 @@ for i, prop in enumerate(reversed(proportions)):
     if prop < 0.95:
         print(32000 - i)
         break
+    

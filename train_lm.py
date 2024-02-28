@@ -28,6 +28,7 @@ class Wikitext103Dataset(data.Dataset):
 
     def __len__(self):
         # Skip last batch, which is the only incomplete one (due to packing)
+        # More importantly, we need label for all tokens of the input, but the last batch can't look ahead
         return self.data.size(0) - 1 
 
     def __getitem__(self, idx):
@@ -64,7 +65,7 @@ class Wikitext103Model(CausalTransformer):
             sync_dist=True,       # this doesn't seem to impact training time, likely because we have only 3 devices
             on_step=True,
             on_epoch=True,
-            rank_zero_only=True,  # this seems to slightly speed up training
+            rank_zero_only=False,  # this seems to slightly speed up training
             prog_bar=True
         )
 
@@ -130,7 +131,7 @@ class Wikitext103Model(CausalTransformer):
 # SECTION: Training parameters
 # TODO: make these CLI arguments instead of constants 
 CHECKPOINT_BASE = "./experiments/embed_dim_64"
-EXPERIMENT = "base-positional"
+EXPERIMENT = "man-positional"
 CHECKPOINT_DIR = CHECKPOINT_BASE + '/' + EXPERIMENT
 
 TRAIN_PATH = "./data/wikitext-103/unigram.wiki.train.tokens.tokenized.pt"
@@ -181,7 +182,7 @@ if __name__ == "__main__":
         accelerator="gpu",
         devices=[0, 1, 2],         # TODO: Change this back to 3 (David was running an experiment on GPU0)
         strategy="ddp",
-        precision="32-true",      # TODO: Use 32-true?
+        precision="16-mixed",      # TODO: Use 32-true?
         max_epochs=25,
         gradient_clip_val=1.0,     # TODO: change this back to a low value like 1.0 or 0.1
         benchmark=False,           # this can't be used when deterministic=True
@@ -216,7 +217,7 @@ if __name__ == "__main__":
             num_classes=len(tokenizer),
             max_context_len=1024,
             model_dim=64,
-            attention_norm=None,
+            attention_norm=1,  # Use None for dot-product attention
             learn_temperatures=True,
             positional_temperatures=True,
             num_heads=8,

@@ -147,5 +147,5 @@ class TransformerEncoder(nn.Module):
     def init_layers(self, sigma_main, sigma_proj):
         for layer in self.layers:
             layer.init_modules(sigma_main, sigma_proj)
-
 #!SECTION
+            

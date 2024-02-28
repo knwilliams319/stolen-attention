@@ -57,3 +57,4 @@ class REXScheduler(optim.lr_scheduler._LRScheduler):
         factor = (1 - t/self.T)/(0.5 + 0.5 * (1 - t/self.T))
         return [group['initial_lr'] * factor for group in self.optimizer.param_groups]
 #!SECTION
+    
