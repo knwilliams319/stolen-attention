@@ -178,7 +178,7 @@ if __name__ == "__main__":
         enable_progress_bar=True,
         accelerator="gpu",          # Uses 'mps' automatically on my Mac.
         strategy="ddp",
-        devices=3,                  # Only one core for mps
+        devices=1,                  # Only one core for mps
         precision="16-mixed",       # NOTE: Might need to be 32-true depending on the checkpoint
         benchmark=True,
         logger=False                # Turns off creation of 'lightning_logs' directory
