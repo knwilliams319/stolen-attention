@@ -3,6 +3,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
+import scipy.spatial as sp
 #!SECTION
 
 # SECTION: Base Attention Class
@@ -51,7 +52,7 @@ class AttentionMechanism(nn.Module):
         if self.learn_temperatures:
             nn.init.uniform_(self.temperatures, 0.95, 1.05) # draw uniformly around 1, which is technically the temperature for F.softmax
 
-    def forward(self, x, mask=None, return_attention=False):
+    def forward(self, x, layer_idx, q_hull_props, k_hull_props, mask=None, return_attention=False):
         batch_size, seq_length, embed_dim = x.size()
         qkv = self.qkv_proj(x)
 
@@ -64,6 +65,21 @@ class AttentionMechanism(nn.Module):
         # LINK: https://arxiv.org/pdf/2309.14322.pdf
         #q = self.q_layernorm(q)
         #k = self.k_layernorm(k)
+
+        # Sniff Q, K, to calculate how many embeddings from each are in the convex hull
+        # NOTE: While debugging, this sometimes fails due to deficient Q, K. Some layers must have really strange projections!
+        try:
+            q_hull = sp.ConvexHull(q[0][0].cpu()) # take first batch of first head
+            q_vertex_prop = len(q_hull.vertices) / q_hull.npoints  # How many vectors form the convex hull
+            q_hull_props[layer_idx].append(q_vertex_prop)
+        except sp._qhull.QhullError:
+            q_hull_props[layer_idx].append(None)
+        try:
+            k_hull = sp.ConvexHull(k[0][0].cpu()) # take first batch of first head
+            k_vertex_prop = len(k_hull.vertices) / k_hull.npoints  # How many vectors form the convex hull
+            k_hull_props[layer_idx].append(k_vertex_prop)
+        except sp._qhull.QhullError:
+            k_hull_props[layer_idx].append(None)
 
         # Get attention logits and add attention mask
         attn_logits = self.get_logits(q, k)

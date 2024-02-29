@@ -211,6 +211,8 @@ if __name__ == "__main__":
     sliding_mode = False
     print("Testing Normal Inference on Validation Set")
     trainer.test(model, dataloaders=val_loader, verbose=True)
+    print(model.q_hull_props)
+    print(model.k_hull_props)
 
     print("Testing Sliding Window Inference on Validation Set")
     sliding_mode = True
