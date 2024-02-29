@@ -162,9 +162,9 @@ class Wikitext103Model(CausalTransformer):
 # SECTION: Training parameters
 # TODO: make these CLI arguments instead of constants 
 CHECKPOINT_BASE = "./experiments/embed_dim_64/n_heads_8"
-EXPERIMENT = "base"
+EXPERIMENT = "euc-positional"
 CHECKPOINT_DIR = CHECKPOINT_BASE + '/' + EXPERIMENT
-VALID_PATH = "./data/unigram.wiki.valid.tokens.tokenized.pt"
+VALID_PATH = "./data/wikitext-103/unigram.wiki.valid.tokens.tokenized.pt"
 TOKENIZER_PATH = "./unigram-tokenizer/tokenizer.model"
 #!SECTION
         
@@ -176,8 +176,9 @@ if __name__ == "__main__":
         deterministic=False,        # Doesn't matter since val_loaders aren't shuffling 
         default_root_dir=None,
         enable_progress_bar=True,
-        accelerator="gpu",          # Uses 'mps' automatically on my Mac
-        devices=1,                  # Only one core for mps
+        accelerator="gpu",          # Uses 'mps' automatically on my Mac.
+        strategy="ddp",
+        devices=3,                  # Only one core for mps
         precision="16-mixed",       # NOTE: Might need to be 32-true depending on the checkpoint
         benchmark=True,
         logger=False                # Turns off creation of 'lightning_logs' directory
@@ -187,16 +188,15 @@ if __name__ == "__main__":
     tokenizer = SentencePieceProcessor(model_file=TOKENIZER_PATH)
 
     # Create dataloaders
+    BATCH_SIZE = 128
     val_dataset = Wikitext103Dataset(VALID_PATH, tokenizer.pad_id(), len(tokenizer))
-    BATCH_SIZE = 2
-    val_loader = data.DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, drop_last=False, num_workers=4, persistent_workers=True)
+    val_loader = data.DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, drop_last=False, num_workers=4, persistent_workers=False)
 
     # NOTE: `val_dataset_flat` should ideally be a FlattenedWikitext103Dataset object. However, there are so many batches in this setting,
     #       that the total inference time would be 1.5 hours on my Mac. The normal validation set has 264 batches, which is a large enough
     #       number to get some rough estimates for now.
-    val_dataset_flat = Wikitext103Dataset(VALID_PATH, tokenizer.pad_id(), len(tokenizer))
-    BATCH_SIZE = 2
-    val_loader_flat = data.DataLoader(val_dataset_flat, batch_size=BATCH_SIZE, shuffle=False, drop_last=False, num_workers=4, persistent_workers=True)
+    val_dataset_flat = FlattenedWikitext103Dataset(VALID_PATH, tokenizer.pad_id(), len(tokenizer))
+    val_loader_flat = data.DataLoader(val_dataset_flat, batch_size=BATCH_SIZE, shuffle=False, drop_last=False, num_workers=4, persistent_workers=False)
 
     # Load pretrained model
     checkpoint_dir = Path(CHECKPOINT_DIR)
@@ -210,10 +210,10 @@ if __name__ == "__main__":
     # Validate model
     sliding_mode = False
     print("Testing Normal Inference on Validation Set")
-    trainer.validate(model, dataloaders=val_loader, verbose=True)
+    trainer.test(model, dataloaders=val_loader, verbose=True)
 
     print("Testing Sliding Window Inference on Validation Set")
     sliding_mode = True
-    trainer.validate(model, dataloaders=val_loader_flat, verbose=True)
+    trainer.test(model, dataloaders=val_loader_flat, verbose=True)
 
 #!SECTION
