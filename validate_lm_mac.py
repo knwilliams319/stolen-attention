@@ -162,7 +162,7 @@ class Wikitext103Model(CausalTransformer):
 # SECTION: Training parameters
 # TODO: make these CLI arguments instead of constants 
 CHECKPOINT_BASE = "./experiments/embed_dim_64/n_heads_8"
-EXPERIMENT = "base"
+EXPERIMENT = "man-positional"
 CHECKPOINT_DIR = CHECKPOINT_BASE + '/' + EXPERIMENT
 VALID_PATH = "./data/unigram.wiki.valid.tokens.tokenized.pt"
 TOKENIZER_PATH = "./unigram-tokenizer/tokenizer.model"
@@ -180,22 +180,21 @@ if __name__ == "__main__":
         devices=1,                  # Only one core for mps
         precision="16-mixed",       # NOTE: Might need to be 32-true depending on the checkpoint
         benchmark=True,
-        logger=False                # Turns off creation of 'lightning_logs' directory
+        logger=False                 # Use False to disable creation of 'lightning_logs' directory
     )
 
     # Initialize tokenizer
     tokenizer = SentencePieceProcessor(model_file=TOKENIZER_PATH)
 
     # Create dataloaders
+    BATCH_SIZE = 1
     val_dataset = Wikitext103Dataset(VALID_PATH, tokenizer.pad_id(), len(tokenizer))
-    BATCH_SIZE = 2
     val_loader = data.DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, drop_last=False, num_workers=4, persistent_workers=True)
 
     # NOTE: `val_dataset_flat` should ideally be a FlattenedWikitext103Dataset object. However, there are so many batches in this setting,
     #       that the total inference time would be 1.5 hours on my Mac. The normal validation set has 264 batches, which is a large enough
     #       number to get some rough estimates for now.
     val_dataset_flat = Wikitext103Dataset(VALID_PATH, tokenizer.pad_id(), len(tokenizer))
-    BATCH_SIZE = 2
     val_loader_flat = data.DataLoader(val_dataset_flat, batch_size=BATCH_SIZE, shuffle=False, drop_last=False, num_workers=4, persistent_workers=True)
 
     # Load pretrained model
