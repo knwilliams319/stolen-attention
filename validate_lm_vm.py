@@ -9,6 +9,7 @@ from lightning.pytorch.profilers import AdvancedProfiler
 from pathlib import Path
 from sentencepiece import SentencePieceProcessor
 from lightning.pytorch.loggers import CSVLogger
+import pickle
 # from transformers import GPT2TokenizerFast
 
 from modules import CausalTransformer
@@ -161,8 +162,8 @@ class Wikitext103Model(CausalTransformer):
   
 # SECTION: Training parameters
 # TODO: make these CLI arguments instead of constants 
-CHECKPOINT_BASE = "./experiments/embed_dim_64/n_heads_8"
-EXPERIMENT = "euc-positional"
+CHECKPOINT_BASE = "./experiments/embed_dim_64/n_heads_32"
+EXPERIMENT = "euc"
 CHECKPOINT_DIR = CHECKPOINT_BASE + '/' + EXPERIMENT
 VALID_PATH = "./data/wikitext-103/unigram.wiki.valid.tokens.tokenized.pt"
 TOKENIZER_PATH = "./unigram-tokenizer/tokenizer.model"
@@ -178,17 +179,18 @@ if __name__ == "__main__":
         enable_progress_bar=True,
         accelerator="gpu",          # Uses 'mps' automatically on my Mac.
         strategy="ddp",
-        devices=1,                  # Only one core for mps
+        devices=[1],                # Only one core for mps
         precision="16-mixed",       # NOTE: Might need to be 32-true depending on the checkpoint
         benchmark=True,
-        logger=False                # Turns off creation of 'lightning_logs' directory
+        logger=False,               # Turns off creation of 'lightning_logs' directory
+        limit_test_batches=100      # Might need to use this for higher dimensional models
     )
 
     # Initialize tokenizer
     tokenizer = SentencePieceProcessor(model_file=TOKENIZER_PATH)
 
     # Create dataloaders
-    BATCH_SIZE = 128
+    BATCH_SIZE = 1
     val_dataset = Wikitext103Dataset(VALID_PATH, tokenizer.pad_id(), len(tokenizer))
     val_loader = data.DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, drop_last=False, num_workers=4, persistent_workers=False)
 
@@ -211,11 +213,13 @@ if __name__ == "__main__":
     sliding_mode = False
     print("Testing Normal Inference on Validation Set")
     trainer.test(model, dataloaders=val_loader, verbose=True)
-    print(model.q_hull_props)
-    print(model.k_hull_props)
+    with open(f'q-hull-props-{EXPERIMENT}.pkl', 'wb') as q_hull_file:
+        pickle.dump(model.q_hull_props,q_hull_file)
+    with open(f'k-hull-props-{EXPERIMENT}.pkl', 'wb') as k_hull_file:
+        pickle.dump(model.k_hull_props,k_hull_file)
 
-    print("Testing Sliding Window Inference on Validation Set")
-    sliding_mode = True
-    trainer.test(model, dataloaders=val_loader_flat, verbose=True)
+    # print("Testing Sliding Window Inference on Validation Set")
+    # sliding_mode = True
+    # trainer.test(model, dataloaders=val_loader_flat, verbose=True)
 
 #!SECTION

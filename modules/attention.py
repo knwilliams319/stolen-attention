@@ -68,18 +68,18 @@ class AttentionMechanism(nn.Module):
 
         # Sniff Q, K, to calculate how many embeddings from each are in the convex hull
         # NOTE: While debugging, this sometimes fails due to deficient Q, K. Some layers must have really strange projections!
-        try:
-            q_hull = sp.ConvexHull(q[0][0].cpu()) # take first batch of first head
-            q_vertex_prop = len(q_hull.vertices) / q_hull.npoints  # How many vectors form the convex hull
-            q_hull_props[layer_idx].append(q_vertex_prop)
-        except sp._qhull.QhullError:
-            q_hull_props[layer_idx].append(None)
-        try:
-            k_hull = sp.ConvexHull(k[0][0].cpu()) # take first batch of first head
-            k_vertex_prop = len(k_hull.vertices) / k_hull.npoints  # How many vectors form the convex hull
-            k_hull_props[layer_idx].append(k_vertex_prop)
-        except sp._qhull.QhullError:
-            k_hull_props[layer_idx].append(None)
+        # try:
+        #     q_hull = sp.ConvexHull(q[0][0].cpu()) # take first batch of first head
+        #     q_vertex_prop = len(q_hull.vertices) / q_hull.npoints  # How many vectors form the convex hull
+        #     q_hull_props[layer_idx].append(q_vertex_prop)
+        # except sp._qhull.QhullError:
+        #     q_hull_props[layer_idx].append(None)
+        # try:
+        #     k_hull = sp.ConvexHull(k[0][0].cpu()) # take first batch of first head
+        #     k_vertex_prop = len(k_hull.vertices) / k_hull.npoints  # How many vectors form the convex hull
+        #     k_hull_props[layer_idx].append(k_vertex_prop)
+        # except sp._qhull.QhullError:
+        #     k_hull_props[layer_idx].append(None)
 
         # Get attention logits and add attention mask
         attn_logits = self.get_logits(q, k)
@@ -157,7 +157,7 @@ class EuclideanAttention(AttentionMechanism):
     def get_logits(self, q, k):
         '''
         Get attention logits after which softmax (possibly with temperatures) will be applied.
-        Logits will be caluclated via Euclidean Distance (L2 Norm).
+        Logits will be caluclated via Negative Squared Distance.
         '''
         # NOTE: For the same batch size, torch.square(torch.cdist(q, k, norm=2)) is faster than below.
         #       However, it takes more memory, making it slower if we push batch sizes as high as possible. 
@@ -185,7 +185,7 @@ class ManhattanAttention(AttentionMechanism):
     def get_logits(self, q, k):
         '''
         Get attention logits after which softmax (possibly with temperatures) will be applied.
-        Logits will be caluclated via Manhattan Distance (L1 Norm).
+        Logits will be caluclated via Negative Manhattan Distance.
         '''
         # Calculate batched pairwise negative manhattan distance between embeddings in Q, K
         q = q.unsqueeze(3)
