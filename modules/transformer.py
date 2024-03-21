@@ -119,22 +119,6 @@ class CausalTransformer(L.LightningModule):
             bias=False  # the nn.Embedding on the input has no bias; neither should the output embedding projection layer -- fairseq does this too
         )
 
-        # Store Q, K convex hull proportions of layers
-        self.q_hull_props = {}
-        self.k_hull_props = {}
-        self.q_hull_norms = {}
-        self.k_hull_norms = {}
-        # for i in range(len(self.transformer.layers)):
-        #     self.q_hull_props[i] = {}
-        #     self.k_hull_props[i] = {}
-        #     self.q_hull_norms[i] = {}
-        #     self.k_hull_norms[i] = {}
-        #     for j in range(self.hparams.num_classes):
-        #         self.q_hull_props[i][j] = []
-        #         self.k_hull_props[i][j] = []
-        #         self.q_hull_norms[i][j] = []
-        #         self.k_hull_norms[i][j] = []
-
     def _init_layers(self):
         # NOTE: Initializing linear layers like this overrides any layer-specific initialization, as layers' constructors are called
         #       in self._create_model()
@@ -172,7 +156,7 @@ class CausalTransformer(L.LightningModule):
         x = self.dropout(x)
 
         # Send data through the decoder layers and normalize outputs
-        x = self.transformer(x, self.q_hull_props, self.k_hull_props, self.q_hull_norms, self.k_hull_norms, mask=mask)
+        x = self.transformer(x, mask=mask)
         x = self.output_norm(x)
 
         # Project outputs
@@ -181,7 +165,8 @@ class CausalTransformer(L.LightningModule):
 
     @torch.no_grad()
     def get_attention_maps(self, x, mask=None):
-        """Function for extracting the attention matrices of the whole Transformer for a single batch.
+        """
+        Function for extracting the attention matrices of the whole Transformer for a single batch.
 
         Input arguments same as the forward pass.
         """

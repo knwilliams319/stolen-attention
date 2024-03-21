@@ -52,7 +52,7 @@ class AttentionMechanism(nn.Module):
         if self.learn_temperatures:
             nn.init.uniform_(self.temperatures, 0.95, 1.05) # draw uniformly around 1, which is technically the temperature for F.softmax
 
-    def forward(self, x, layer_idx, q_hull_props, k_hull_props, q_hull_norms, k_hull_norms, mask=None, return_attention=False):
+    def forward(self, x, mask=None, return_attention=False):
         batch_size, seq_length, embed_dim = x.size()
         qkv = self.qkv_proj(x)
 
