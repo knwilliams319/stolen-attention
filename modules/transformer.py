@@ -33,6 +33,7 @@ class CausalTransformer(L.LightningModule):
         activation_dropout=0.1,
         ffn_dim=4096,
         use_pos_encoding=True,
+        use_euclidean_attention=None
     ):
         """CausalTransformer.
 
@@ -106,7 +107,8 @@ class CausalTransformer(L.LightningModule):
             max_context_len=self.hparams.max_context_len,
             attention_norm=self.hparams.attention_norm,
             learn_temperatures=self.hparams.learn_temperatures,
-            positional_temperatures=self.hparams.positional_temperatures
+            positional_temperatures=self.hparams.positional_temperatures,
+            use_euclidean_attention=self.hparams.use_euclidean_attention
         )
         self.output_norm = nn.LayerNorm(self.hparams.model_dim)  # Decoder blocks normalize before their layers, so we need an extra norm here before our output MLP
 
@@ -120,9 +122,18 @@ class CausalTransformer(L.LightningModule):
         # Store Q, K convex hull proportions of layers
         self.q_hull_props = {}
         self.k_hull_props = {}
-        for i in range(len(self.transformer.layers)):
-            self.q_hull_props[i] = []
-            self.k_hull_props[i] = []
+        self.q_hull_norms = {}
+        self.k_hull_norms = {}
+        # for i in range(len(self.transformer.layers)):
+        #     self.q_hull_props[i] = {}
+        #     self.k_hull_props[i] = {}
+        #     self.q_hull_norms[i] = {}
+        #     self.k_hull_norms[i] = {}
+        #     for j in range(self.hparams.num_classes):
+        #         self.q_hull_props[i][j] = []
+        #         self.k_hull_props[i][j] = []
+        #         self.q_hull_norms[i][j] = []
+        #         self.k_hull_norms[i][j] = []
 
     def _init_layers(self):
         # NOTE: Initializing linear layers like this overrides any layer-specific initialization, as layers' constructors are called
@@ -161,7 +172,7 @@ class CausalTransformer(L.LightningModule):
         x = self.dropout(x)
 
         # Send data through the decoder layers and normalize outputs
-        x = self.transformer(x, self.q_hull_props, self.k_hull_props, mask=mask)
+        x = self.transformer(x, self.q_hull_props, self.k_hull_props, self.q_hull_norms, self.k_hull_norms, mask=mask)
         x = self.output_norm(x)
 
         # Project outputs
