@@ -46,7 +46,7 @@ class Wikitext103Dataset(data.Dataset):
         return tokens, labels, padding_mask
     
 class FlattenedWikitext103Dataset(data.Dataset):
-    def __init__(self, tokens_path: str, pad_id: int, vocab_size: int):
+    def __init__(self, tokens_path: str, pad_id: int, vocab_size: int, stride: int=1):
         super().__init__()
         # Load packed tokens and store context length before flattening them
         self.data = torch.load(tokens_path)
@@ -54,6 +54,7 @@ class FlattenedWikitext103Dataset(data.Dataset):
         self.data = torch.flatten(self.data)
         self.pad_id = pad_id
         self.vocab_size = vocab_size
+        self.stride = stride
 
         # Find last index at which tokens exist, as there may be padding tokens in the last packed batch
         self.num_tokens = 0
@@ -63,12 +64,18 @@ class FlattenedWikitext103Dataset(data.Dataset):
         self.num_tokens = i
 
     def __len__(self):
-        return self.num_tokens - self.context_length
+        num_windows = self.num_tokens - self.context_length
+        divisor, remainder = divmod(num_windows, self.stride) 
+        if remainder == 0: 
+            return divisor
+        else: # if remainder is nonzero, // rounds down to ignore an extra batch that's still within range for labels
+            return divisor + 1
 
     def __getitem__(self, idx):
-        tokens = self.data[idx:idx+self.context_length]
+        strided_idx = idx * self.stride
+        tokens = self.data[strided_idx:strided_idx+self.context_length]
         padding_mask = torch.zeros(self.context_length)
-        labels = self.data[idx+1:idx+self.context_length+1]
+        labels = self.data[strided_idx+1:strided_idx+self.context_length+1]
         return tokens, labels, padding_mask
 # !SECTION
 
@@ -159,7 +166,7 @@ class Wikitext103Model(CausalTransformer):
   
 # SECTION: Training parameters
 # TODO: make these CLI arguments instead of constants 
-CHECKPOINT_BASE = "./experiments/embed_dim_64/n_heads_16"
+CHECKPOINT_BASE = "./experiments/embed_dim_64/n_heads_8"
 EXPERIMENT = "base"
 CHECKPOINT_DIR = CHECKPOINT_BASE + '/' + EXPERIMENT
 VALID_PATH = "./data/wikitext-103/unigram.wiki.valid.tokens.tokenized.pt"
@@ -194,7 +201,7 @@ if __name__ == "__main__":
     # NOTE: `val_dataset_flat` should ideally be a FlattenedWikitext103Dataset object. However, there are so many batches in this setting,
     #       that the total inference time would be 1.5 hours on my Mac. The normal validation set has 264 batches, which is a large enough
     #       number to get some rough estimates for now.
-    val_dataset_flat = FlattenedWikitext103Dataset(VALID_PATH, tokenizer.pad_id(), len(tokenizer))
+    val_dataset_flat = FlattenedWikitext103Dataset(VALID_PATH, tokenizer.pad_id(), len(tokenizer), stride=500)
     val_loader_flat = data.DataLoader(val_dataset_flat, batch_size=BATCH_SIZE, shuffle=False, drop_last=False, num_workers=3, persistent_workers=True)
 
     # Load pretrained model
