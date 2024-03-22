@@ -43,6 +43,12 @@ class AttentionMechanism(nn.Module):
             else:
                 self.temperatures = nn.Parameter(torch.Tensor(1), requires_grad=True)
 
+        # Q/K Hull calculation data structures
+        self.last_token_q_norm = None 
+        self.last_token_k_norm = None
+        self.last_token_q_vertex = None
+        self.last_token_k_vertex = None
+
     def init_modules(self, sigma_main, sigma_proj):
         nn.init.normal_(self.qkv_proj.weight, mean=0, std=sigma_main)
         # nn.init.constant_(self.qkv_proj.bias, 0)
@@ -67,19 +73,20 @@ class AttentionMechanism(nn.Module):
         #k = self.k_layernorm(k)
 
         # Sniff Q, K, to calculate how many embeddings from each are in the convex hull
-        # NOTE: While debugging, this sometimes fails due to deficient Q, K. Some layers must have really strange projections!
-        # try:
-        #     q_hull = sp.ConvexHull(q[0][0].cpu()) # take first batch of first head
-        #     q_vertex_prop = len(q_hull.vertices) / q_hull.npoints  # How many vectors form the convex hull
-        #     q_hull_props[layer_idx].append(q_vertex_prop)
-        # except sp._qhull.QhullError:
-        #     pass
-        # try:
-        #     k_hull = sp.ConvexHull(k[0][0].cpu()) # take first batch of first head
-        #     k_vertex_prop = len(k_hull.vertices) / k_hull.npoints  # How many vectors form the convex hull
-        #     k_hull_props[layer_idx].append(k_vertex_prop)
-        # except sp._qhull.QhullError:
-        #     pass
+        # NOTE: While debugging, this sometimes fails due to deficient Q, K. 
+        #       Some layers must have really strange projections... the Q/K matrices are all zeros!
+        try:
+            q_hull = sp.ConvexHull(q[0][0].cpu()) # take first batch of first head
+            self.last_token_q_vertex = q.size(2)-1 in q_hull.vertices
+            self.last_token_q_norm = torch.norm(q[0][0][-1]).item()
+        except sp._qhull.QhullError:
+            pass
+        try:
+            k_hull = sp.ConvexHull(k[0][0].cpu()) # take first batch of first head
+            self.last_token_k_vertex = k.size(2)-1 in k_hull.vertices
+            self.last_token_k_norm = torch.norm(k[0][0][-1]).item()
+        except sp._qhull.QhullError:
+            pass
 
         # Get attention logits and add attention mask
         attn_logits = self.get_logits(q, k)
