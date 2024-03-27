@@ -46,15 +46,19 @@ class Wikitext103Dataset(data.Dataset):
         return tokens, labels, padding_mask
     
 class FlattenedWikitext103Dataset(data.Dataset):
-    def __init__(self, tokens_path: str, pad_id: int, vocab_size: int, stride: int=1):
+    def __init__(self, tokens_path: str, pad_id: int, vocab_size: int, stride: int=1, window_length=None):
         super().__init__()
-        # Load packed tokens and store context length before flattening them
+        # Load packed tokens and store other constructor arguments
         self.data = torch.load(tokens_path)
-        self.context_length = self.data.size(1)
-        self.data = torch.flatten(self.data)
         self.pad_id = pad_id
         self.vocab_size = vocab_size
         self.stride = stride
+
+        # If not provided, default window length is packed tokens' original context length
+        self.window_length = window_length if window_length else self.data.size(1) 
+
+        # Flatten packed tokens 
+        self.data = torch.flatten(self.data)
 
         # Find last index at which tokens exist, as there may be padding tokens in the last packed batch
         self.num_tokens = 0
@@ -64,7 +68,7 @@ class FlattenedWikitext103Dataset(data.Dataset):
         self.num_tokens = i
 
     def __len__(self):
-        num_windows = self.num_tokens - self.context_length
+        num_windows = self.num_tokens - self.window_length
         divisor, remainder = divmod(num_windows, self.stride) 
         if remainder == 0: 
             return divisor
@@ -73,9 +77,9 @@ class FlattenedWikitext103Dataset(data.Dataset):
 
     def __getitem__(self, idx):
         strided_idx = idx * self.stride
-        tokens = self.data[strided_idx:strided_idx+self.context_length]
-        padding_mask = torch.zeros(self.context_length)
-        labels = self.data[strided_idx+1:strided_idx+self.context_length+1]
+        tokens = self.data[strided_idx:strided_idx+self.window_length]
+        padding_mask = torch.zeros(self.window_length)
+        labels = self.data[strided_idx+1:strided_idx+self.window_length+1]
         return tokens, labels, padding_mask
 # !SECTION
 
@@ -86,17 +90,14 @@ class Wikitext103Model(CausalTransformer):
     def __init__(self, **model_kwargs):
         # Initialize model as per usual, but add extra state to track token statistics
         super().__init__(**model_kwargs)
-        # self.losses = {}    # KEY: token_id; VALUE: list of loss values for the prediction over that token
-        self.norms = {}       # KEY: (layer_idx, token_id, q/k); VALUE: list of embedding norms for that token in the Q/K matrix of first head of that layer
-        self.is_vertex = {}   # KEY: (layer_idx, token_id, q/k); VALUE: list of vertex membership for that token in Q/K matrix of the first head of that layer
+        self.norms = {}        # KEY: (layer_idx, token_id); VALUE: list of embedding norms for that token in the K matrix of first head of that layer
+        self.is_vertex = {}    # KEY: (layer_idx, token_id); VALUE: list of vertex membership for that token in K Hull of the first head of that layer
+        self.attn_weights = {} # KEY: (layer_idx, token_id); VALUE: list of attention weights assigned to that token in the first head of that layer
         for t in range(self.hparams.num_classes):
-            # self.losses[t] = []
             for l in range(self.hparams.num_layers):
-                self.norms[(l, t)] = {}
-                self.is_vertex[(l, t)] = {}
-                for m in ['q', 'k']:
-                    self.norms[(l, t)][m] = []
-                    self.is_vertex[(l, t)][m] = []
+                self.norms[(l, t)] = []
+                self.is_vertex[(l, t)] = []
+                self.attn_weights[(l, t)] = []
 
     def _calculate_loss(self, batch):
         data, labels, mask = batch
@@ -115,8 +116,8 @@ class Wikitext103Model(CausalTransformer):
             # NOTE: Using -1 will get predictions on the 513th element given the previous 512, which is what we 
             #       generally want to measure with sliding window inference. But, we can't measure the norm of the
             #       embedding of elements that don't get crunched by the model's attention heads.
-            preds = preds[:, -2]
-            labels = labels[:, -2].long()
+            preds = preds[:, -1]
+            labels = labels[:, -1].long()
 
             # Track statistics
             # loss = F.cross_entropy(preds, labels, reduction='none')
@@ -126,17 +127,32 @@ class Wikitext103Model(CausalTransformer):
             #     token_id = labels_cpu[batch_idx]
             #     self.losses[token_id].append(loss_cpu[batch_idx].item())
             # return torch.mean(loss)  # return mean so that logging doesn't error
+            def stat_generator(tokens, vertices, embeddings, attn_weights):
+                # This generator is the most optimal way to check for vertex membership, as we can
+                # avoid using "in vertices" statements that take O(n) time. 
+                internal_i = 0
+                vertex_i = 0
+                while vertex_i < len(vertices):
+                    if vertices[vertex_i] == internal_i:
+                        yield tokens[internal_i].item(), True, embeddings[internal_i].item(), attn_weights[internal_i].item()
+                        internal_i += 1
+                        vertex_i += 1
+                    else:
+                        yield tokens[internal_i].item(), False, embeddings[internal_i].item(), attn_weights[internal_i].item()
+                        internal_i += 1
 
-            # Track Q/K Hull statistics
-            # NOTE: When calculating Q/K Hull statistics, batch size should be 1
-            token_id = data[0][-1].item()
-            for i, layer in enumerate(self.transformer.layers):
-                if layer.self_attn.last_token_q_norm: # will be None for a deficient layer
-                    self.norms[(i, token_id)]['q'].append(layer.self_attn.last_token_q_norm)
-                    self.is_vertex[(i, token_id)]['q'].append(layer.self_attn.last_token_q_vertex)
-                if layer.self_attn.last_token_k_norm: # will be None for a deficient layer
-                    self.norms[(i, token_id)]['k'].append(layer.self_attn.last_token_k_norm)
-                    self.is_vertex[(i, token_id)]['k'].append(layer.self_attn.last_token_k_vertex)  
+            # Track K Hull statistics
+            # NOTE: When calculating K Hull statistics, batch size should be 1
+            token_ids = data[0].cpu()
+            for l, layer in enumerate(self.transformer.layers):
+                if layer.self_attn.k_hull is not None: # will be None for a deficient layer
+                    vertices = sorted(layer.self_attn.k_hull.vertices)
+                    embedding_norms = torch.norm(layer.self_attn.k_matrix, dim=-1)
+                    weights = layer.self_attn.attn_weights
+                    for t, is_vertex, norm, weight in stat_generator(token_ids, vertices, embedding_norms, weights):
+                        self.norms[(l, t)].append(norm)
+                        self.is_vertex[(l, t)].append(is_vertex)
+                        self.attn_weights[(l, t)].append(weight)
 
             # we're doing nothing special with loss for Q/K stats
             return F.cross_entropy(preds, labels) 
@@ -183,7 +199,7 @@ if __name__ == "__main__":
         enable_progress_bar=True,
         accelerator="gpu",          
         strategy="ddp",
-        devices=[2],                  
+        devices=[0],                  
         precision="16-mixed",     # NOTE: Might need to be 32-true depending on the checkpoint
         benchmark=True,
         logger=False,             # Turns off creation of 'lightning_logs' directory
@@ -198,10 +214,8 @@ if __name__ == "__main__":
     val_dataset = Wikitext103Dataset(VALID_PATH, tokenizer.pad_id(), len(tokenizer))
     val_loader = data.DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, drop_last=False, num_workers=4, persistent_workers=False)
 
-    # NOTE: `val_dataset_flat` should ideally be a FlattenedWikitext103Dataset object. However, there are so many batches in this setting,
-    #       that the total inference time would be 1.5 hours on my Mac. The normal validation set has 264 batches, which is a large enough
-    #       number to get some rough estimates for now.
-    val_dataset_flat = FlattenedWikitext103Dataset(VALID_PATH, tokenizer.pad_id(), len(tokenizer), stride=500)
+    WINDOW_LENGTH = 512
+    val_dataset_flat = FlattenedWikitext103Dataset(VALID_PATH, tokenizer.pad_id(), len(tokenizer), stride=300, window_length=WINDOW_LENGTH)
     val_loader_flat = data.DataLoader(val_dataset_flat, batch_size=BATCH_SIZE, shuffle=False, drop_last=False, num_workers=3, persistent_workers=True)
 
     # Load pretrained model
@@ -243,78 +257,52 @@ if __name__ == "__main__":
     # statistics_path = checkpoint_dir / f'val-loss-stats.csv'
     # statistics.to_csv(statistics_path, index=False)
 
-    q_hull_norms = {}
-    q_hull_norms_vars = {}
-    q_hull_props = {}
-    k_hull_norms = {}
-    k_hull_norms_vars = {}
-    k_hull_props = {}
-    q_hull_counts = {}
-    k_hull_counts = {}
-    q_and_k = {} 
-    q_not_k = {}
-    k_not_q = {}
-    neither = {}
+    k_norm_mean = {}
+    k_norm_var = {}
+    k_norm_min = {}
+    k_norm_max = {}
+    k_hull_prop = {}
+    weight_mean = {}
+    weight_min = {}
+    weight_max = {}
+    weight_var = {}
+
     for i in range(model.hparams.num_layers):
-        q_hull_norms[f'layer_{i}_q_norm'] = [pd.NA]*16000
-        q_hull_props[f'layer_{i}_q_prop'] = [pd.NA]*16000
-        q_hull_norms_vars[f'layer_{i}_q_norm_var'] = [pd.NA]*16000
-        k_hull_norms[f'layer_{i}_k_norm'] = [pd.NA]*16000
-        k_hull_props[f'layer_{i}_k_prop'] = [pd.NA]*16000
-        k_hull_norms_vars[f'layer_{i}_k_norm_var'] = [pd.NA]*16000
-        q_and_k[f'layer_{i}_q_and_k'] = [pd.NA]*16000
-        q_not_k[f'layer_{i}_q_not_k'] = [pd.NA]*16000
-        k_not_q[f'layer_{i}_k_not_q'] = [pd.NA]*16000
-        neither[f'layer_{i}_not_q_nor_k'] = [pd.NA]*16000
-        q_hull_counts[f'layer_{i}_q_count'] = [pd.NA]*16000
-        k_hull_counts[f'layer_{i}_k_count'] = [pd.NA]*16000
-    for (layer, token), d in model.norms.items():
-        q_norms, k_norms = d['q'], d['k']
-        if len(q_norms) > 0:
-            q_hull_norms[f'layer_{layer}_q_norm'][token] = np.mean(q_norms)
-            q_hull_norms_vars[f'layer_{layer}_q_norm_var'][token] = np.var(q_norms)
-            q_hull_counts[f'layer_{layer}_q_count'][token] = len(q_norms)
+        k_norm_mean[f'layer_{i}_norm_mean'] = [pd.NA]*16000
+        k_norm_var[f'layer_{i}_norm_var'] = [pd.NA]*16000
+        k_norm_min[f'layer_{i}_norm_min'] = [pd.NA]*16000
+        k_norm_max[f'layer_{i}_norm_max'] = [pd.NA]*16000
+        k_hull_prop[f'layer_{i}_vertex_prop'] = [pd.NA]*16000
+        weight_mean[f'layer_{i}_weight_mean'] = [pd.NA]*16000
+        weight_min[f'layer_{i}_weight_min'] = [pd.NA]*16000
+        weight_max[f'layer_{i}_weight_max'] = [pd.NA]*16000
+        weight_var[f'layer_{i}_weight_var'] = [pd.NA]*16000
+
+    for (l, t), k_norms in model.norms.items():
         if len(k_norms) > 0:
-            k_hull_norms[f'layer_{layer}_k_norm'][token] = np.mean(k_norms)
-            k_hull_norms_vars[f'layer_{layer}_k_norm_var'][token] = np.var(k_norms)
-            k_hull_counts[f'layer_{layer}_k_count'][token] = len(k_norms)
-    for (layer, token), d in model.is_vertex.items():
-        q_is_vertex, k_is_vertex = d['q'], d['k']
-        if do_q := (len(q_is_vertex) > 0):
-            q_hull_props[f'layer_{layer}_q_prop'][token] = np.mean(q_is_vertex)
-        if do_k := (len(k_is_vertex) > 0):
-            k_hull_props[f'layer_{layer}_k_prop'][token] = np.mean(k_is_vertex)
-        if do_q and do_k:
-            try:
-                bins = confusion_matrix(q_is_vertex, k_is_vertex)
-                if len(bins) == 1: # occurs if q_is_vertex == k_is_vertex for all elements
-                    if q_is_vertex[0]:
-                        q_and_k[f'layer_{layer}_q_and_k'][token] = len(q_is_vertex)
-                        q_not_k[f'layer_{layer}_q_not_k'][token] = 0
-                        k_not_q[f'layer_{layer}_k_not_q'][token] = 0
-                        neither[f'layer_{layer}_not_q_nor_k'][token] = 0
-                    else:
-                        q_and_k[f'layer_{layer}_q_and_k'][token] = 0
-                        q_not_k[f'layer_{layer}_q_not_k'][token] = 0
-                        k_not_q[f'layer_{layer}_k_not_q'][token] = 0
-                        neither[f'layer_{layer}_not_q_nor_k'][token] = len(q_is_vertex)
-                else:
-                    q_and_k[f'layer_{layer}_q_and_k'][token] = bins[1][1]
-                    q_not_k[f'layer_{layer}_q_not_k'][token] = bins[1][0]
-                    k_not_q[f'layer_{layer}_k_not_q'][token] = bins[0][1]
-                    neither[f'layer_{layer}_not_q_nor_k'][token] = bins[0][0]
-            except ValueError: # occurs if q, k have unequal numbers of elements
-                pass
+            k_norm_mean[f'layer_{l}_norm_mean'][t] = np.mean(k_norms)
+            k_norm_var[f'layer_{l}_norm_var'][t] = np.var(k_norms)
+            k_norm_min[f'layer_{l}_norm_min'][t] = np.min(k_norms)
+            k_norm_max[f'layer_{l}_norm_max'][t] = np.max(k_norms)
+    for (l, t), is_vertex in model.is_vertex.items():
+        if len(is_vertex) > 0:
+            k_hull_prop[f'layer_{l}_vertex_prop'][t] = np.mean(is_vertex)
+    for (l, t), weights in model.attn_weights.items():
+        if len(weights) > 0:
+            weight_mean[f'layer_{l}_weight_mean'][t] = np.mean(weights)
+            weight_min[f'layer_{l}_weight_min'][t] = np.min(weights)
+            weight_max[f'layer_{l}_weight_max'][t] = np.max(weights)
+            weight_var[f'layer_{l}_weight_var'][t] = np.var(weights)
+       
     statistics_dict = {}
-    for d in [q_hull_norms, q_hull_norms_vars, q_hull_props, 
-              k_hull_norms, k_hull_norms_vars, k_hull_props,
-              q_and_k, q_not_k, k_not_q, neither, 
-              q_hull_counts, k_hull_counts]:
+    for d in [k_norm_mean, k_norm_min, k_norm_max, k_norm_var,
+              k_hull_prop,
+              weight_mean, weight_min, weight_max, weight_var]:
         for key, array in d.items():
             statistics_dict[key] = array
     stats_df = pd.DataFrame(statistics_dict)
     stats_df['token_id'] = np.arange(16000)
-    statistics_path = checkpoint_dir / f'hull-stats.csv'
+    statistics_path = checkpoint_dir / f'khull-stats-window={WINDOW_LENGTH}.csv'
     stats_df.to_csv(statistics_path, index=False)
     print("Done")
 

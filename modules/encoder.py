@@ -103,7 +103,7 @@ class EncoderBlock(nn.Module):
 
         # Two-layer MLP
         self.up_projection = nn.Linear(input_dim, dim_feedforward)
-        self.act = nn.GELU() #nn.LeakyReLU(negative_slope=0.1, inplace=True)
+        self.act = nn.GELU()
         self.act_dropout = nn.Dropout(activation_dropout)
         self.down_projection = nn.Linear(dim_feedforward, input_dim)
 
