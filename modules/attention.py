@@ -47,6 +47,7 @@ class AttentionMechanism(nn.Module):
         self.k_matrix = None
         self.k_hull = None
         self.attn_weights = None
+        self.query_point = None
 
     def init_modules(self, sigma_main, sigma_proj):
         nn.init.normal_(self.qkv_proj.weight, mean=0, std=sigma_main)
@@ -57,7 +58,7 @@ class AttentionMechanism(nn.Module):
         if self.learn_temperatures:
             nn.init.uniform_(self.temperatures, 0.95, 1.05) # draw uniformly around 1, which is technically the temperature for F.softmax
 
-    def forward(self, x, mask=None, return_attention=False):
+    def forward(self, x, mask=None):
         batch_size, seq_length, embed_dim = x.size()
         qkv = self.qkv_proj(x)
 
@@ -82,7 +83,8 @@ class AttentionMechanism(nn.Module):
         #     pass
         # try:
         #     self.k_matrix = k[0][0].cpu() # take first batch of first head
-        #     self.k_hull = sp.ConvexHull(self.k_matrix) 
+        #     self.k_hull = sp.ConvexHull(self.k_matrix, incremental=True) 
+        #     self.query_point = q[0][0][-1].cpu() # grab embedding for last query vector of first batch of first head
         # except sp._qhull.QhullError:
         #     pass
 
@@ -103,10 +105,7 @@ class AttentionMechanism(nn.Module):
         o = self.o_proj(values)
 
         # Return outputs
-        if return_attention:
-            return o, attention
-        else:
-            return o
+        return o
         
     def get_logits(self, q, k):
         raise NotImplementedError
