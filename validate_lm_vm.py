@@ -11,8 +11,9 @@ from sentencepiece import SentencePieceProcessor
 from lightning.pytorch.loggers import CSVLogger
 import pandas as pd
 import numpy as np
-import pickle
-from sklearn.metrics import confusion_matrix
+import scipy.spatial as sp
+# import pickle
+# from sklearn.metrics import confusion_matrix
 # from transformers import GPT2TokenizerFast
 
 from modules import CausalTransformer
@@ -80,7 +81,7 @@ class FlattenedWikitext103Dataset(data.Dataset):
         tokens = self.data[strided_idx:strided_idx+self.window_length]
         padding_mask = torch.zeros(self.window_length)
         labels = self.data[strided_idx+1:strided_idx+self.window_length+1]
-        return tokens, labels, padding_mask
+        return tokens, labels, padding_mask, strided_idx
 # !SECTION
 
 # SECTION: Model definitions
@@ -90,17 +91,34 @@ class Wikitext103Model(CausalTransformer):
     def __init__(self, **model_kwargs):
         # Initialize model as per usual, but add extra state to track token statistics
         super().__init__(**model_kwargs)
-        self.norms = {}        # KEY: (layer_idx, token_id); VALUE: list of embedding norms for that token in the K matrix of first head of that layer
-        self.is_vertex = {}    # KEY: (layer_idx, token_id); VALUE: list of vertex membership for that token in K Hull of the first head of that layer
-        self.attn_weights = {} # KEY: (layer_idx, token_id); VALUE: list of attention weights assigned to that token in the first head of that layer
-        for t in range(self.hparams.num_classes):
-            for l in range(self.hparams.num_layers):
-                self.norms[(l, t)] = []
-                self.is_vertex[(l, t)] = []
-                self.attn_weights[(l, t)] = []
+        # self.all_attn_weights = []
+        self.batch_no = []
+        self.n_vertices = {}
+        self.n_tokens = []
+        self.n_interior = {}
+        self.query_norm = {}
+        self.query_inside = {}
+        self.max_weight_in = {}
+        self.max_norm_in = {}
+        self.max_weight_out = {}
+        self.max_norm_out = {}
+        self.max_inside = {}
+        self.avg_weight_all = {}
+        self.avg_norm_all = {}
+        self.avg_weight_in = {}
+        self.avg_norm_in = {}
+        self.avg_weight_out = {}
+        self.avg_norm_out = {}
+        self.avg_weight_all_top5 = {}
+        self.avg_norm_all_top5 = {}
+        self.avg_weight_in_top5 = {}
+        self.avg_norm_in_top5 = {}
+        self.avg_weight_out_top5 = {}
+        self.avg_norm_out_top5 = {}
+        self.n_inside_top5 = {}
 
     def _calculate_loss(self, batch):
-        data, labels, mask = batch
+        data, labels, mask, batch_idx = batch
         data = data.int()
         preds = self.forward(data, pad_mask=mask) # shape = [bsz, context_len, vocab_size]
 
@@ -114,12 +132,11 @@ class Wikitext103Model(CausalTransformer):
         else:
             # Grab predictions on the last element of the context for all batches
             # NOTE: Using -1 will get predictions on the 513th element given the previous 512, which is what we 
-            #       generally want to measure with sliding window inference. But, we can't measure the norm of the
-            #       embedding of elements that don't get crunched by the model's attention heads.
+            #       generally want to measure with sliding window inference.
             preds = preds[:, -1]
             labels = labels[:, -1].long()
 
-            # Track statistics
+            # Track statistics (deprecated)
             # loss = F.cross_entropy(preds, labels, reduction='none')
             # labels_cpu = labels.cpu().numpy()
             # loss_cpu = loss.detach().cpu()
@@ -127,33 +144,102 @@ class Wikitext103Model(CausalTransformer):
             #     token_id = labels_cpu[batch_idx]
             #     self.losses[token_id].append(loss_cpu[batch_idx].item())
             # return torch.mean(loss)  # return mean so that logging doesn't error
-            def stat_generator(tokens, vertices, embeddings, attn_weights):
-                # This generator is the most optimal way to check for vertex membership, as we can
-                # avoid using "in vertices" statements that take O(n) time. 
-                internal_i = 0
-                vertex_i = 0
-                while vertex_i < len(vertices):
-                    if vertices[vertex_i] == internal_i:
-                        yield tokens[internal_i].item(), True, embeddings[internal_i].item(), attn_weights[internal_i].item()
-                        internal_i += 1
-                        vertex_i += 1
-                    else:
-                        yield tokens[internal_i].item(), False, embeddings[internal_i].item(), attn_weights[internal_i].item()
-                        internal_i += 1
 
-            # Track K Hull statistics
-            # NOTE: When calculating K Hull statistics, batch size should be 1
+            # Capture statistics that are layer-agnostic
             token_ids = data[0].cpu()
-            for l, layer in enumerate(self.transformer.layers):
-                if layer.self_attn.k_hull is not None: # will be None for a deficient layer
-                    vertices = sorted(layer.self_attn.k_hull.vertices)
-                    embedding_norms = torch.norm(layer.self_attn.k_matrix, dim=-1)
-                    weights = layer.self_attn.attn_weights
-                    for t, is_vertex, norm, weight in stat_generator(token_ids, vertices, embedding_norms, weights):
-                        self.norms[(l, t)].append(norm)
-                        self.is_vertex[(l, t)].append(is_vertex)
-                        self.attn_weights[(l, t)].append(weight)
+            self.batch_no.append(batch_idx.item())
+            self.n_tokens.append(len(token_ids))
 
+            for l, layer in enumerate(self.transformer.layers):
+                # self.all_attn_weights.append(layer.self_attn.attn_weights.numpy())
+                
+                for h in range(self.hparams.num_heads):
+                    vertices = sorted(layer.self_attn.k_hull[h].vertices)
+                    k_norms = torch.norm(layer.self_attn.k_matrix[h], dim=-1)
+                    weights = layer.self_attn.attn_weights[h]
+                    query = layer.self_attn.query_point[h]
+                    k_hull = layer.self_attn.k_hull[h]
+
+                    # Initialize list of statistics for this head
+                    if h not in self.n_vertices:
+                        self.n_vertices[h] = []
+                        self.n_interior[h] = []
+                        self.query_norm[h] = []
+                        self.query_inside[h] = []
+                        self.max_weight_in[h] = []
+                        self.max_norm_in[h] = []
+                        self.max_weight_out[h] = []
+                        self.max_norm_out[h] = []
+                        self.max_inside[h] = []
+                        self.avg_weight_all[h] = []
+                        self.avg_norm_all[h] = []
+                        self.avg_weight_in[h] = []
+                        self.avg_norm_in[h] = []
+                        self.avg_weight_out[h] = []
+                        self.avg_norm_out[h] = []
+                        self.avg_weight_all_top5[h] = []
+                        self.avg_norm_all_top5[h] = []
+                        self.avg_weight_in_top5[h] = []
+                        self.avg_norm_in_top5[h] = []
+                        self.avg_weight_out_top5[h] = []
+                        self.avg_norm_out_top5[h] = []
+                        self.n_inside_top5[h] = []
+
+                    # Capture statistics for this head
+                    self.n_vertices[h].append(len(vertices))
+                    self.n_interior[h].append(len(token_ids) - len(vertices))
+
+                    vertex_weights = weights[vertices]
+                    vertex_norms = k_norms[vertices]
+                    interior_weights = [weight for i, weight in enumerate(weights) if i not in vertices]
+                    interior_norms = [norm for i, norm in enumerate(k_norms) if i not in vertices]
+
+                    self.avg_weight_all[h].append(torch.mean(weights).item())
+                    self.avg_norm_all[h].append(torch.mean(k_norms).item())
+                    indexed_weights = list(enumerate(weights))
+                    sorted_weights = sorted(indexed_weights, key=lambda x: x[1], reverse=True)
+                    self.avg_weight_all_top5[h].append(np.mean([weight for _, weight in sorted_weights[0:5]]))
+                    self.avg_norm_all_top5[h].append(np.mean([k_norms[idx] for idx, _ in sorted_weights[0:5]]))
+                    top_inside = [not idx in vertices for idx, _ in sorted_weights[0:5]]
+                    self.n_inside_top5[h].append(sum(top_inside))
+
+                    self.avg_weight_out[h].append(torch.mean(vertex_weights).item())
+                    self.avg_norm_out[h].append(torch.mean(vertex_norms).item())
+                    indexed_weights_out = list(enumerate(vertex_weights))
+                    sorted_weights_out = sorted(indexed_weights_out, key=lambda x: x[1], reverse=True)
+                    self.avg_weight_out_top5[h].append(np.mean([weight for _, weight in sorted_weights_out[0:5]]))
+                    self.avg_norm_out_top5[h].append(np.mean([vertex_norms[idx] for idx, _ in sorted_weights_out[0:5]]))
+                    self.max_weight_out[h].append(sorted_weights_out[0][1].item())
+                    self.max_norm_out[h].append(vertex_norms[sorted_weights_out[0][0]].item())
+
+                    # sometimes, all keys are vertices of the convex hull
+                    if len(interior_weights) > 0:
+                        self.avg_weight_in[h].append(np.mean(interior_weights))
+                        self.avg_norm_in[h].append(np.mean(interior_norms))
+                        indexed_weights_in = list(enumerate(interior_weights))
+                        sorted_weights_in = sorted(indexed_weights_in, key=lambda x: x[1], reverse=True)
+                        self.avg_weight_in_top5[h].append(np.mean([weight for _, weight in sorted_weights_in[0:5]]))
+                        self.avg_norm_in_top5[h].append(np.mean([interior_norms[idx] for idx, _ in sorted_weights_in[0:5]]))
+                        self.max_weight_in[h].append(sorted_weights_in[0][1].item())
+                        self.max_norm_in[h].append(interior_norms[sorted_weights_in[0][0]].item())
+                        self.max_inside[h].append(sorted_weights_out[0][1].item() < sorted_weights_in[0][1].item())
+                    else:
+                        self.avg_weight_in[h].append(pd.NA)
+                        self.avg_norm_in[h].append(pd.NA)
+                        self.avg_weight_in_top5[h].append(pd.NA)
+                        self.avg_norm_in_top5[h].append(pd.NA)
+                        self.max_weight_in[h].append(pd.NA)
+                        self.max_norm_in[h].append(pd.NA)
+                        self.max_inside[h].append(False)
+
+                    # This must be last, as doing add_points may change the vertex list
+                    try:
+                        k_hull.add_points(query.unsqueeze(0))
+                        self.query_inside[h].append(not len(token_ids) in k_hull.vertices)
+                    except sp.QhullError:
+                        self.query_inside[h].append(pd.NA)
+                    self.query_norm[h].append(torch.norm(query).item())
+                    
             # we're doing nothing special with loss for Q/K stats
             return F.cross_entropy(preds, labels) 
 
@@ -182,7 +268,7 @@ class Wikitext103Model(CausalTransformer):
   
 # SECTION: Training parameters
 # TODO: make these CLI arguments instead of constants 
-CHECKPOINT_BASE = "./experiments/embed_dim_64/n_heads_8"
+CHECKPOINT_BASE = "./experiments/1_layer_8_heads/"
 EXPERIMENT = "base"
 CHECKPOINT_DIR = CHECKPOINT_BASE + '/' + EXPERIMENT
 VALID_PATH = "./data/wikitext-103/unigram.wiki.valid.tokens.tokenized.pt"
@@ -199,7 +285,7 @@ if __name__ == "__main__":
         enable_progress_bar=True,
         accelerator="gpu",          
         strategy="ddp",
-        devices=[0],                  
+        devices=[2],                  
         precision="16-mixed",     # NOTE: Might need to be 32-true depending on the checkpoint
         benchmark=True,
         logger=False,             # Turns off creation of 'lightning_logs' directory
@@ -215,12 +301,16 @@ if __name__ == "__main__":
     val_loader = data.DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, drop_last=False, num_workers=4, persistent_workers=False)
 
     WINDOW_LENGTH = 512
-    val_dataset_flat = FlattenedWikitext103Dataset(VALID_PATH, tokenizer.pad_id(), len(tokenizer), stride=300, window_length=WINDOW_LENGTH)
+    STRIDE = 128
+    val_dataset_flat = FlattenedWikitext103Dataset(VALID_PATH, tokenizer.pad_id(), len(tokenizer), stride=STRIDE, window_length=WINDOW_LENGTH)
     val_loader_flat = data.DataLoader(val_dataset_flat, batch_size=BATCH_SIZE, shuffle=False, drop_last=False, num_workers=3, persistent_workers=True)
 
     # Load pretrained model
     checkpoint_dir = Path(CHECKPOINT_DIR)
-    pretrained_file_path = list(checkpoint_dir.glob('epoch=24-step=*.ckpt'))[0]
+    pretrained_file_path = list(checkpoint_dir.glob('epoch=*.ckpt')) # Should grab the best checkpoint
+    pretrained_file_path, *extras = pretrained_file_path
+    if extras:
+        raise ValueError('Too many checkpoints were globbed in this directory!')
     if pretrained_file_path.exists() and pretrained_file_path.is_file():
         print("Found pretrained model, loading...")
         model = Wikitext103Model.load_from_checkpoint(pretrained_file_path)
@@ -240,6 +330,10 @@ if __name__ == "__main__":
     sliding_mode = True
     trainer.test(model, dataloaders=val_loader_flat, verbose=True)
 
+    # weights = np.array(model.all_attn_weights)
+    # weights_path = checkpoint_dir / f'attn_weights-wdw={WINDOW_LENGTH}-stride={STRIDE}.npy'
+    # np.save(weights_path, weights)
+
     # avg_losses = [pd.NA]*16000
     # variances = [pd.NA]*16000
     # counts = [pd.NA]*16000
@@ -257,53 +351,94 @@ if __name__ == "__main__":
     # statistics_path = checkpoint_dir / f'val-loss-stats.csv'
     # statistics.to_csv(statistics_path, index=False)
 
-    k_norm_mean = {}
-    k_norm_var = {}
-    k_norm_min = {}
-    k_norm_max = {}
-    k_hull_prop = {}
-    weight_mean = {}
-    weight_min = {}
-    weight_max = {}
-    weight_var = {}
+    # k_norm_mean = {}
+    # k_norm_var = {}
+    # k_norm_min = {}
+    # k_norm_max = {}
+    # k_hull_prop = {}
+    # weight_mean = {}
+    # weight_min = {}
+    # weight_max = {}
+    # weight_var = {}
 
-    for i in range(model.hparams.num_layers):
-        k_norm_mean[f'layer_{i}_norm_mean'] = [pd.NA]*16000
-        k_norm_var[f'layer_{i}_norm_var'] = [pd.NA]*16000
-        k_norm_min[f'layer_{i}_norm_min'] = [pd.NA]*16000
-        k_norm_max[f'layer_{i}_norm_max'] = [pd.NA]*16000
-        k_hull_prop[f'layer_{i}_vertex_prop'] = [pd.NA]*16000
-        weight_mean[f'layer_{i}_weight_mean'] = [pd.NA]*16000
-        weight_min[f'layer_{i}_weight_min'] = [pd.NA]*16000
-        weight_max[f'layer_{i}_weight_max'] = [pd.NA]*16000
-        weight_var[f'layer_{i}_weight_var'] = [pd.NA]*16000
+    # for i in range(model.hparams.num_layers):
+    #     k_norm_mean[f'layer_{i}_norm_mean'] = [pd.NA]*16000
+    #     k_norm_var[f'layer_{i}_norm_var'] = [pd.NA]*16000
+    #     k_norm_min[f'layer_{i}_norm_min'] = [pd.NA]*16000
+    #     k_norm_max[f'layer_{i}_norm_max'] = [pd.NA]*16000
+    #     k_hull_prop[f'layer_{i}_vertex_prop'] = [pd.NA]*16000
+    #     weight_mean[f'layer_{i}_weight_mean'] = [pd.NA]*16000
+    #     weight_min[f'layer_{i}_weight_min'] = [pd.NA]*16000
+    #     weight_max[f'layer_{i}_weight_max'] = [pd.NA]*16000
+    #     weight_var[f'layer_{i}_weight_var'] = [pd.NA]*16000
 
-    for (l, t), k_norms in model.norms.items():
-        if len(k_norms) > 0:
-            k_norm_mean[f'layer_{l}_norm_mean'][t] = np.mean(k_norms)
-            k_norm_var[f'layer_{l}_norm_var'][t] = np.var(k_norms)
-            k_norm_min[f'layer_{l}_norm_min'][t] = np.min(k_norms)
-            k_norm_max[f'layer_{l}_norm_max'][t] = np.max(k_norms)
-    for (l, t), is_vertex in model.is_vertex.items():
-        if len(is_vertex) > 0:
-            k_hull_prop[f'layer_{l}_vertex_prop'][t] = np.mean(is_vertex)
-    for (l, t), weights in model.attn_weights.items():
-        if len(weights) > 0:
-            weight_mean[f'layer_{l}_weight_mean'][t] = np.mean(weights)
-            weight_min[f'layer_{l}_weight_min'][t] = np.min(weights)
-            weight_max[f'layer_{l}_weight_max'][t] = np.max(weights)
-            weight_var[f'layer_{l}_weight_var'][t] = np.var(weights)
+    # for (l, t), k_norms in model.norms.items():
+    #     if len(k_norms) > 0:
+    #         k_norm_mean[f'layer_{l}_norm_mean'][t] = np.mean(k_norms)
+    #         k_norm_var[f'layer_{l}_norm_var'][t] = np.var(k_norms)
+    #         k_norm_min[f'layer_{l}_norm_min'][t] = np.min(k_norms)
+    #         k_norm_max[f'layer_{l}_norm_max'][t] = np.max(k_norms)
+    # for (l, t), is_vertex in model.is_vertex.items():
+    #     if len(is_vertex) > 0:
+    #         k_hull_prop[f'layer_{l}_vertex_prop'][t] = np.mean(is_vertex)
+    # for (l, t), weights in model.attn_weights.items():
+    #     if len(weights) > 0:
+    #         weight_mean[f'layer_{l}_weight_mean'][t] = np.mean(weights)
+    #         weight_min[f'layer_{l}_weight_min'][t] = np.min(weights)
+    #         weight_max[f'layer_{l}_weight_max'][t] = np.max(weights)
+    #         weight_var[f'layer_{l}_weight_var'][t] = np.var(weights)
        
-    statistics_dict = {}
-    for d in [k_norm_mean, k_norm_min, k_norm_max, k_norm_var,
-              k_hull_prop,
-              weight_mean, weight_min, weight_max, weight_var]:
-        for key, array in d.items():
-            statistics_dict[key] = array
-    stats_df = pd.DataFrame(statistics_dict)
-    stats_df['token_id'] = np.arange(16000)
-    statistics_path = checkpoint_dir / f'khull-stats-window={WINDOW_LENGTH}.csv'
-    stats_df.to_csv(statistics_path, index=False)
+    # statistics_dict = {}
+    # for d in [k_norm_mean, k_norm_min, k_norm_max, k_norm_var,
+    #           k_hull_prop,
+    #           weight_mean, weight_min, weight_max, weight_var]:
+    #     for key, array in d.items():
+    #         statistics_dict[key] = array
+    # stats_df = pd.DataFrame(statistics_dict)
+    # stats_df['token_id'] = np.arange(16000)
+    # statistics_path = checkpoint_dir / f'khull-stats-window={WINDOW_LENGTH}.csv'
+    # stats_df.to_csv(statistics_path, index=False)
+
+    try:
+        attn_type = model.hparams.attention_norm
+    except KeyError:
+        if model.hparams.use_euclidean_attention:
+            attn_type = 2
+        else:
+            attn_type = 0
+
+    for head in model.n_vertices:
+        stats_df = pd.DataFrame({
+            'batch_no': model.batch_no,
+            'attn_norm': str(attn_type),
+            'n_heads': str(model.hparams.num_heads),
+            'head_id': str(head),
+            'n_vertices': model.n_vertices[head],
+            'n_interior': model.n_interior[head],
+            'query_norm': model.query_norm[head],
+            'query_inside': model.query_inside[head],
+            'max_weight_in': model.max_weight_in[head],
+            'max_norm_in': model.max_norm_in[head],
+            'max_weight_out': model.max_weight_out[head],
+            'max_norm_out': model.max_norm_out[head],
+            'max_inside': model.max_inside[head],
+            'avg_weight_all': model.avg_weight_all[head],
+            'avg_norm_all': model.avg_norm_all[head],
+            'avg_weight_in': model.avg_weight_in[head],
+            'avg_norm_in': model.avg_norm_in[head],
+            'avg_weight_out': model.avg_weight_out[head],
+            'avg_norm_out': model.avg_norm_out[head],
+            'avg_weight_all_top5': model.avg_weight_all_top5[head],
+            'avg_norm_all_top5': model.avg_norm_all_top5[head],
+            'avg_weight_in_top5': model.avg_weight_in_top5[head],
+            'avg_norm_in_top5': model.avg_norm_in_top5[head],
+            'avg_weight_out_top5': model.avg_weight_out_top5[head],
+            'avg_norm_out_top5': model.avg_norm_out_top5[head],
+            'n_inside_top5': model.n_inside_top5[head]
+        })
+        statistics_path = checkpoint_dir / f'khull-batch-stats-head{head}.csv'
+        stats_df.to_csv(statistics_path, index=False)
+    
     print("Done")
 
 #!SECTION
