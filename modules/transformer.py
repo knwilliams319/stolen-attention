@@ -33,6 +33,7 @@ class CausalTransformer(L.LightningModule):
         activation_dropout=0.1,
         ffn_dim=4096,
         use_pos_encoding=True,
+        use_euclidean_attention=None
     ):
         """CausalTransformer.
 
@@ -106,7 +107,8 @@ class CausalTransformer(L.LightningModule):
             max_context_len=self.hparams.max_context_len,
             attention_norm=self.hparams.attention_norm,
             learn_temperatures=self.hparams.learn_temperatures,
-            positional_temperatures=self.hparams.positional_temperatures
+            positional_temperatures=self.hparams.positional_temperatures,
+            use_euclidean_attention=self.hparams.use_euclidean_attention
         )
         self.output_norm = nn.LayerNorm(self.hparams.model_dim)  # Decoder blocks normalize before their layers, so we need an extra norm here before our output MLP
 
@@ -163,7 +165,8 @@ class CausalTransformer(L.LightningModule):
 
     @torch.no_grad()
     def get_attention_maps(self, x, mask=None):
-        """Function for extracting the attention matrices of the whole Transformer for a single batch.
+        """
+        Function for extracting the attention matrices of the whole Transformer for a single batch.
 
         Input arguments same as the forward pass.
         """

@@ -3,6 +3,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
+import scipy.spatial as sp
 #!SECTION
 
 # SECTION: Base Attention Class
@@ -42,6 +43,12 @@ class AttentionMechanism(nn.Module):
             else:
                 self.temperatures = nn.Parameter(torch.Tensor(1), requires_grad=True)
 
+        # Q/K Hull calculation data structures
+        # self.k_matrix = [None]*num_heads
+        # self.k_hull = [None]*num_heads
+        # self.attn_weights = [None]*num_heads
+        # self.query_point = [None]*num_heads
+
     def init_modules(self, sigma_main, sigma_proj):
         nn.init.normal_(self.qkv_proj.weight, mean=0, std=sigma_main)
         # nn.init.constant_(self.qkv_proj.bias, 0)
@@ -51,7 +58,7 @@ class AttentionMechanism(nn.Module):
         if self.learn_temperatures:
             nn.init.uniform_(self.temperatures, 0.95, 1.05) # draw uniformly around 1, which is technically the temperature for F.softmax
 
-    def forward(self, x, mask=None, return_attention=False):
+    def forward(self, x, mask=None):
         batch_size, seq_length, embed_dim = x.size()
         qkv = self.qkv_proj(x)
 
@@ -65,6 +72,24 @@ class AttentionMechanism(nn.Module):
         #q = self.q_layernorm(q)
         #k = self.k_layernorm(k)
 
+        # Sniff Q, K, to calculate how many embeddings from each are in the convex hull
+        # NOTE: While debugging, this sometimes fails due to deficient Q, K. 
+        #       Some layers must have really strange projections... the Q/K matrices are all zeros!
+        # try:
+        #     q_hull = sp.ConvexHull(q[0][0].cpu()) # take first batch of first head
+        #     self.last_token_q_vertex = q.size(2)-1 in q_hull.vertices
+        #     self.last_token_q_norm = torch.norm(q[0][0][-1]).item()
+        # except sp._qhull.QhullError:
+        #     pass
+        # assert k.size(0) == 1, "Check parameter settings... we must use a batch size of 1!"
+        # for i in range(self.num_heads):
+        #     try:
+        #         self.k_matrix[i] = k[0][i].cpu()
+        #         self.k_hull[i] = sp.ConvexHull(self.k_matrix[i], incremental=True) 
+        #         self.query_point[i] = q[0][i][-1].cpu() # grab embedding for last query vector of first batch of first head
+        #     except sp._qhull.QhullError:
+        #         pass
+
         # Get attention logits and add attention mask
         attn_logits = self.get_logits(q, k)
         if mask is not None:
@@ -72,6 +97,10 @@ class AttentionMechanism(nn.Module):
 
         # Retrieve attention weights and values
         attention = self.softmax_fn(attn_logits, dim=-1)
+        # for i in range(self.num_heads):
+        #     self.query_point[i] = q[0][i][-1].cpu()
+        #     self.k_matrix[i] = k[0][i].cpu()
+        #     self.attn_weights[i] = attention[0][i][-1].cpu()  # take full context length weights for all heads
         attention = self.dropout(attention)
         values = torch.matmul(attention, v)
     
@@ -81,10 +110,7 @@ class AttentionMechanism(nn.Module):
         o = self.o_proj(values)
 
         # Return outputs
-        if return_attention:
-            return o, attention
-        else:
-            return o
+        return o
         
     def get_logits(self, q, k):
         raise NotImplementedError
@@ -141,7 +167,7 @@ class EuclideanAttention(AttentionMechanism):
     def get_logits(self, q, k):
         '''
         Get attention logits after which softmax (possibly with temperatures) will be applied.
-        Logits will be caluclated via Euclidean Distance (L2 Norm).
+        Logits will be caluclated via Negative Squared Distance.
         '''
         # NOTE: For the same batch size, torch.square(torch.cdist(q, k, norm=2)) is faster than below.
         #       However, it takes more memory, making it slower if we push batch sizes as high as possible. 
@@ -169,7 +195,7 @@ class ManhattanAttention(AttentionMechanism):
     def get_logits(self, q, k):
         '''
         Get attention logits after which softmax (possibly with temperatures) will be applied.
-        Logits will be caluclated via Manhattan Distance (L1 Norm).
+        Logits will be caluclated via Negative Manhattan Distance.
         '''
         # Calculate batched pairwise negative manhattan distance between embeddings in Q, K
         q = q.unsqueeze(3)

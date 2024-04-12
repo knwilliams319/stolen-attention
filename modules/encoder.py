@@ -17,6 +17,7 @@ class EncoderBlock(nn.Module):
                  attention_norm=None,
                  learn_temperatures=False,
                  positional_temperatures=False,
+                 use_euclidean_attention=None
                  ):
         """EncoderBlock.
 
@@ -39,7 +40,31 @@ class EncoderBlock(nn.Module):
         self.ffn_norm = nn.LayerNorm(input_dim)
 
         # Attention layer
-        if attention_norm is None:
+        if use_euclidean_attention is not None:
+            # NOTE: This is a deprecated argument for the embed_dim_64/n_heads_8 experiments.
+            #       It was created before I implemented ManhattanAttention, so it is a simple switch.
+            #       Regardless, its value will be None for newer models; attention_norm should be used instead.
+            if use_euclidean_attention == True:
+                self.self_attn = DotProductAttention(
+                input_dim,
+                input_dim,
+                num_heads,
+                max_context_len,
+                dropout=attn_dropout,
+                learn_temperatures=learn_temperatures,
+                positional_temperatures=positional_temperatures
+            )
+            else:
+                self.self_attn = EuclideanAttention(
+                input_dim,
+                input_dim,
+                num_heads,
+                max_context_len,
+                dropout=attn_dropout,
+                learn_temperatures=learn_temperatures,
+                positional_temperatures=positional_temperatures
+            )
+        elif attention_norm is None:
             self.self_attn = DotProductAttention(
                 input_dim,
                 input_dim,
@@ -78,7 +103,7 @@ class EncoderBlock(nn.Module):
 
         # Two-layer MLP
         self.up_projection = nn.Linear(input_dim, dim_feedforward)
-        self.act = nn.GELU() #nn.LeakyReLU(negative_slope=0.1, inplace=True)
+        self.act = nn.GELU()
         self.act_dropout = nn.Dropout(activation_dropout)
         self.down_projection = nn.Linear(dim_feedforward, input_dim)
 
@@ -135,14 +160,6 @@ class TransformerEncoder(nn.Module):
         for layer in self.layers:
             x = layer(x, mask=mask)
         return x
-
-    def get_attention_maps(self, x, mask=None):
-        attention_maps = []
-        for layer in self.layers:
-            _, attn_map = layer.self_attn(x, mask=mask, return_attention=True)
-            attention_maps.append(attn_map)
-            x = layer(x)
-        return attention_maps
     
     def init_layers(self, sigma_main, sigma_proj):
         for layer in self.layers:
