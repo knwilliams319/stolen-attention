@@ -44,10 +44,10 @@ class AttentionMechanism(nn.Module):
                 self.temperatures = nn.Parameter(torch.Tensor(1), requires_grad=True)
 
         # Q/K Hull calculation data structures
-        self.k_matrix = [None]*num_heads
-        self.k_hull = [None]*num_heads
-        self.attn_weights = [None]*num_heads
-        self.query_point = [None]*num_heads
+        # self.k_matrix = [None]*num_heads
+        # self.k_hull = [None]*num_heads
+        # self.attn_weights = [None]*num_heads
+        # self.query_point = [None]*num_heads
 
     def init_modules(self, sigma_main, sigma_proj):
         nn.init.normal_(self.qkv_proj.weight, mean=0, std=sigma_main)
@@ -98,6 +98,8 @@ class AttentionMechanism(nn.Module):
         # Retrieve attention weights and values
         attention = self.softmax_fn(attn_logits, dim=-1)
         # for i in range(self.num_heads):
+        #     self.query_point[i] = q[0][i][-1].cpu()
+        #     self.k_matrix[i] = k[0][i].cpu()
         #     self.attn_weights[i] = attention[0][i][-1].cpu()  # take full context length weights for all heads
         attention = self.dropout(attention)
         values = torch.matmul(attention, v)
