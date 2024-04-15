@@ -17,11 +17,11 @@ from modules import CausalTransformer
 
 # SECTION: Dataloaders and LightningModules
 class OpenbookQADataset(data.Dataset):
-    def __init__(self, data_dir: str, dataset: str, sliding=False):
+    def __init__(self, data_dir: str, dataset: str, difficulty: str, sliding=False):
         super().__init__()
         data_dir = Path(data_dir)
-        questions_path = data_dir / f'{dataset}-questions.pt'
-        answers_path = data_dir / f'{dataset}-answers.pt'
+        questions_path = data_dir / f'{dataset}-{difficulty}-questions.pt'
+        answers_path = data_dir / f'{dataset}-{difficulty}-answers.pt'
         self.questions = torch.load(questions_path)
         self.answers = torch.load(answers_path)
         self.sliding = sliding
@@ -189,8 +189,8 @@ if __name__ == "__main__":
     tokenizer = SentencePieceProcessor(model_file=TOKENIZER_PATH)
 
     # Create dataloaders
-    train_dataset = OpenbookQADataset(DATASET_BASE, 'train', sliding=True)
-    val_dataset = OpenbookQADataset(DATASET_BASE, 'dev', sliding=True)
+    train_dataset = OpenbookQADataset(DATASET_BASE, 'train', difficulty='easy', sliding=True)
+    val_dataset = OpenbookQADataset(DATASET_BASE, 'dev', difficulty='easy', sliding=True)
     #test_dataset = OpenbookQADataset(DATASET_BASE, 'test')
 
     BATCH_SIZE = 16
@@ -207,11 +207,11 @@ if __name__ == "__main__":
     
     model = OpenbookQAModel.load_from_checkpoint(
         pretrained_model, 
-        lr=1e-2, 
+        lr=1e-3, 
         num_steps=trainer.max_epochs*len(train_loader)/trainer.num_devices,
-        dropout=0.8,
-        attn_dropout=0.8,
-        activation_dropout=0.8
+        dropout=0.6,
+        attn_dropout=0.6,
+        activation_dropout=0.6
     )
     trainer.fit(model, train_loader, val_loader)
 #!SECTION
