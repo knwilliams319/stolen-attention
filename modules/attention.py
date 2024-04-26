@@ -96,7 +96,7 @@ class AttentionMechanism(nn.Module):
             attn_logits += mask.unsqueeze(1)  # add head dimension for proper broadcasting
 
         # Retrieve attention weights and values
-        attention = self.softmax_fn(attn_logits, dim=-1)
+        attention = self.softmax_fn(attn_logits.nan_to_num(), dim=-1)  # TODO: I need to make mask application better so that I don't have to keep calling nan_to_num()
         # for i in range(self.num_heads):
         #     self.query_point[i] = q[0][i][-1].cpu()
         #     self.k_matrix[i] = k[0][i].cpu()
