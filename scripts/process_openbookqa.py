@@ -33,8 +33,8 @@ def preprocess_raw(dataset: 'str', tokenizer: SentencePieceProcessor, obqa_dir: 
     # Make a function that turns a row of data into a natural-language prompt. Then apply it to all rows of `data` to create prompts for each example.
     def make_prompt(example):
         stem = example['question']['stem']
-        choices = ", ".join([f"({choice['label']}) {choice['text']}" for choice in example['question']['choices']])
-        prompt = f'Question: {stem}: {choices} Answer: '
+        choices = ", ".join([f"Choice {choice['label']}: {choice['text']}" for choice in example['question']['choices']])
+        prompt = f'Question: {stem}: {choices}. Answer: '
         return prompt
     prompts = [make_prompt(data.iloc[i]) for i in range(len(data))]
     answers = data['answerKey']
@@ -52,7 +52,7 @@ def preprocess_raw(dataset: 'str', tokenizer: SentencePieceProcessor, obqa_dir: 
 
     # When prepending facts to the prompt, we want to indicate the beginning of a new fact with the text "Fact: "
     # Apply this transformation, then find the lengths of each fact upon tokenization
-    facts = [f'Fact: {fact}' for fact in facts]
+    facts = [f'Fact: {fact}.' for fact in facts]
     fact_lengths = [len(tokenizer.encode(fact)) for fact in facts]
 
     # Create paths to saved results
@@ -129,7 +129,17 @@ def generate_questions(dataset: 'str', tokenizer: SentencePieceProcessor, obqa_d
         assert len(question) == size  # sanity check
         question_lengths.append(size)
         facts_used.append(inc_facts)
-        answers.append(tokenizer.encode(answer))
+        # answers.append(tokenizer.encode(answer))
+        if answer == "A":
+            answers.append(0)
+        elif answer == "B":
+            answers.append(1)
+        elif answer == "C":
+            answers.append(2)
+        elif answer == "D":
+            answers.append(3)
+        else:
+            raise ValueError("Parsed an unexpected answer choice!")
 
         # Prepend padding tokens until the question is as large as the context length, then save the question
         padding = [tokenizer.pad_id()] * (context_length - size)
