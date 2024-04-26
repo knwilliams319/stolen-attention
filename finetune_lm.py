@@ -3,28 +3,25 @@ import torch
 import torch.nn.functional as F
 import torch.utils.data as data
 import lightning as L
-from lightning.pytorch.tuner.tuning import Tuner
 from lightning.pytorch.callbacks import ModelCheckpoint, ModelSummary, LearningRateMonitor
-from lightning.pytorch.profilers import AdvancedProfiler
 from pathlib import Path
 from sentencepiece import SentencePieceProcessor
 from lightning.pytorch.loggers import CSVLogger
-import pandas as pd
-# from transformers import GPT2TokenizerFast
-
-from modules import CausalTransformer
+from modules.transformer import FinetuneHead
+from pandas import read_csv
 #!SECTION
 
 # SECTION: Dataloaders and LightningModules
 class OpenbookQADataset(data.Dataset):
-    def __init__(self, data_dir: str, dataset: str, difficulty: str, sliding=False):
+    def __init__(self, data_dir: str, dataset: str, difficulty: str):
         super().__init__()
         data_dir = Path(data_dir)
         questions_path = data_dir / f'{dataset}-{difficulty}-questions.pt'
         answers_path = data_dir / f'{dataset}-{difficulty}-answers.pt'
+        support_path = data_dir / f'{dataset}-{difficulty}-support.csv'
         self.questions = torch.load(questions_path)
         self.answers = torch.load(answers_path)
-        self.sliding = sliding
+        self.question_lengths = read_csv(support_path, sep=';')['length']
 
     @property
     def context_length(self):
@@ -34,31 +31,31 @@ class OpenbookQADataset(data.Dataset):
         return self.questions.size(0)
 
     def __getitem__(self, idx):
-        # TODO: should I include a padding mask? the model might just learn to ignore padded tokens anyways
+        # grab question and correct answer choice
         question = self.questions[idx]
-        padding_mask = torch.zeros(self.context_length)
-        if self.sliding:
-            label = self.answers[idx]
-        else:
-            label = torch.cat([question[1:], self.answers[idx]])
+        label = self.answers[idx]
+
+        # create mask to ignore padded positions of the sequence (questions are left-padded)
+        padding_mask = torch.ones(self.context_length)
+        padding_mask[-self.question_lengths[idx]:] = 0
+        padding_mask *= float('-inf')
+        padding_mask = torch.nan_to_num(padding_mask)
         return question, label, padding_mask
 # !SECTION
 
 # SECTION: Model Definition
-class OpenbookQAModel(CausalTransformer):
-    def _calculate_loss(self, batch, sliding=False):
+class OpenbookQAModel(FinetuneHead):
+    def __init__(self, pretrained_path, num_classes, num_steps, lr=1e-3, dropout=0.0, attn_dropout=0.0, activation_dropout=0.0):
+        super().__init__(pretrained_path, num_classes, num_steps, lr=lr, dropout=dropout, attn_dropout=attn_dropout, activation_dropout=activation_dropout)
+
+    def _calculate_loss(self, batch):
         data, labels, mask = batch
         data = data.int()
         preds = self.forward(data, pad_mask=mask) # shape = [bsz, context_len, vocab_size]
-        if sliding:
-            preds = preds[:, -1]
-            labels = labels[:, -1].long()
-            return F.cross_entropy(preds, labels)
-        else:
-            return F.cross_entropy(preds.view(-1, preds.size(-1)), labels.view(-1).long())
+        return F.cross_entropy(preds, labels.long())
 
     def training_step(self, batch, batch_idx):
-        loss = self._calculate_loss(batch, sliding=True)
+        loss = self._calculate_loss(batch)
         self.log(
             "train_loss",
             loss, 
@@ -71,17 +68,9 @@ class OpenbookQAModel(CausalTransformer):
 
         # calculate norms for total update and layers' updates
         total_norm = 0.0
-        layer_grad_norms = [0.0] * self.hparams.num_layers
-        for name, p in self.named_parameters():
+        for _, p in self.named_parameters():
             if p.grad is not None:
-                param_norm = p.grad.detach().data.norm(2).item() ** 2
-                total_norm += param_norm
-                for i in range(self.hparams.num_layers):
-                    if name.startswith(f'transformer.layers.{i}'):
-                        layer_grad_norms[i] += param_norm
-                        break
-        for norm in layer_grad_norms:
-            norm = norm ** (1. / 2)
+                total_norm += p.grad.detach().data.norm(2).item() ** 2
         total_norm = total_norm ** (1. / 2)
         self.log(
             "grad_norm",
@@ -92,21 +81,10 @@ class OpenbookQAModel(CausalTransformer):
             rank_zero_only=True,
             prog_bar=True
         )
-        for i, norm in enumerate(layer_grad_norms):
-            self.log(
-            f"layer_norm_{i}",
-            norm,
-            sync_dist=True,
-            on_step=True,
-            on_epoch=False,
-            rank_zero_only=True,
-            prog_bar=False
-        )
-            
         return loss
 
     def validation_step(self, batch, batch_idx):
-        loss = self._calculate_loss(batch, sliding=True)
+        loss = self._calculate_loss(batch)
         self.log(
             "val_loss",
             loss, 
@@ -172,11 +150,11 @@ if __name__ == "__main__":
             LearningRateMonitor(logging_interval='step')
         ],
         accelerator="gpu",
-        devices=3,                 # TODO: Change this back to 3 (David was running an experiment on GPU0)
-        strategy="ddp",
+        devices=1,                 # TODO: Change this back to 3 (David was running an experiment on GPU0)
+        strategy="ddp_find_unused_parameters_true",
         precision="16-mixed",      
         max_epochs=3,
-        gradient_clip_val=1.0,     
+        gradient_clip_val=5.0,     
         benchmark=False,           # this can't be used when deterministic=True
         profiler=None,             # AdvancedProfiler(dirpath='./', filename='profile.log'),
         limit_train_batches=None,  # TODO: change this back to None
@@ -189,8 +167,8 @@ if __name__ == "__main__":
     tokenizer = SentencePieceProcessor(model_file=TOKENIZER_PATH)
 
     # Create dataloaders
-    train_dataset = OpenbookQADataset(DATASET_BASE, 'train', difficulty='easy', sliding=True)
-    val_dataset = OpenbookQADataset(DATASET_BASE, 'dev', difficulty='easy', sliding=True)
+    train_dataset = OpenbookQADataset(DATASET_BASE, 'train', difficulty='easy')
+    val_dataset = OpenbookQADataset(DATASET_BASE, 'dev', difficulty='easy')
     #test_dataset = OpenbookQADataset(DATASET_BASE, 'test')
 
     BATCH_SIZE = 16
@@ -198,20 +176,21 @@ if __name__ == "__main__":
     val_loader = data.DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, drop_last=False, num_workers=3)
     #test_loader = data.DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, drop_last=False, num_workers=3)
 
-    # Load pretrained model. Take the checkpoint with the best validation loss. 
-    # NOTE: We override the learning rate and num_steps parameters to fit the fine-tuning workload and avoid overfitting
+    # Find the pretrained checkpoint with the best validation loss. 
     checkpoints = Path(CHECKPOINT_DIR).glob("epoch=*.ckpt")
     pretrained_model, *extras = checkpoints
     if extras:
         raise ValueError(f"The directory {CHECKPOINT_DIR} has multiple pretrained model checkpoints inside!")
     
-    model = OpenbookQAModel.load_from_checkpoint(
-        pretrained_model, 
-        lr=1e-3, 
-        num_steps=trainer.max_epochs*len(train_loader)/trainer.num_devices,
-        dropout=0.6,
-        attn_dropout=0.6,
-        activation_dropout=0.6
+    # Create Finetuned Model
+    model = OpenbookQAModel(
+        pretrained_model,
+        4,
+        trainer.max_epochs*len(train_loader)/trainer.num_devices,
+        lr=1e-3,
+        dropout=0.0,
+        attn_dropout=0.0,
+        activation_dropout=0.0
     )
     trainer.fit(model, train_loader, val_loader)
 #!SECTION
