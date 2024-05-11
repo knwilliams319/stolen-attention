@@ -79,7 +79,7 @@ def preprocess_raw(dataset: 'str', tokenizer: SentencePieceProcessor, obqa_dir: 
 # Define function to take preprocessed data files and use them to generate full-context-length questions. Each question will include the original prompt and the gold fact used to create it.
 # Random distractor facts will be sampled until no more facts can fit in the context length. Then the facts will be shuffled and prepended to the prompt to create the question. Finally, the
 # question will be tokenized, and potentially left-padded to the maximum context length so that the questions can be saved to disk as a Tensor of token IDs ready to be loaded. 
-def generate_questions(dataset: 'str', tokenizer: SentencePieceProcessor, obqa_dir: Path=obqa_dir, context_length: int=512, add_distractor=True, save_supporting=True):
+def generate_questions(dataset: 'str', tokenizer: SentencePieceProcessor, obqa_dir: Path=obqa_dir, context_length: int=512, add_distractor=True):
     # Create paths to preprocessed facts and prompts dataframes
     facts_path = obqa_dir / 'working/facts.csv'
     prompts_path = obqa_dir / f'working/{dataset}.csv'
@@ -124,27 +124,41 @@ def generate_questions(dataset: 'str', tokenizer: SentencePieceProcessor, obqa_d
             prompt
         ])
 
-        # Tokenize the question and store its supporting data
+        # Tokenize the question
         question = tokenizer.encode(question)
         assert len(question) == size  # sanity check
+
+        # Store the tokenized question, its length, the facts that were included in its prompt, and the correct answer choice
+        questions.append(question)
         question_lengths.append(size)
         facts_used.append(inc_facts)
-        # answers.append(tokenizer.encode(answer))
-        if answer == "A":
-            answers.append(0)
-        elif answer == "B":
-            answers.append(1)
-        elif answer == "C":
-            answers.append(2)
-        elif answer == "D":
-            answers.append(3)
-        else:
-            raise ValueError("Parsed an unexpected answer choice!")
+        answers.append(tokenizer.encode(answer))  # NOTE: use this in the generative setting or below for a classification head
+        # if answer == "A":
+        #     answers.append(0)
+        # elif answer == "B":
+        #     answers.append(1)
+        # elif answer == "C":
+        #     answers.append(2)
+        # elif answer == "D":
+        #     answers.append(3)
+        # else:
+        #     raise ValueError("Parsed an unexpected answer choice!")
 
-        # Prepend padding tokens until the question is as large as the context length, then save the question
-        padding = [tokenizer.pad_id()] * (context_length - size)
-        question = padding + question
-        questions.append(question)
+    # Prepend padding tokens until the question is as large as the context length
+    # def pad_to_context_length(questions):
+    #     for i, question in enumerate(questions):
+    #         padding = [tokenizer.pad_id()] * (context_length - question_lengths[i])
+    #         yield padding + question     
+    # questions = list(pad_to_context_length(questions))
+        
+    # Prepend padding tokens until the question is as large as the largest question
+    def pad_to_largest_question(questions):
+        max_length = max(question_lengths)
+        for i, question in enumerate(questions):
+            padding = [tokenizer.pad_id()] * (max_length - question_lengths[i])
+            yield padding + question
+    questions = list(pad_to_largest_question(questions))
+        
     
     # Transform collected data to their final representations
     dtype = torch.int16 if len(tokenizer) < 2**15 - 1 else torch.int32
@@ -163,8 +177,7 @@ def generate_questions(dataset: 'str', tokenizer: SentencePieceProcessor, obqa_d
     save_dir.mkdir(parents=False, exist_ok=True)
     torch.save(questions, save_dir / f'{dataset}-{difficulty}-questions.pt')
     torch.save(answers, save_dir / f'{dataset}-{difficulty}-answers.pt')
-    if save_supporting:
-        support_df.to_csv(save_dir / f'{dataset}-{difficulty}-support.csv', index=False, sep=';')
+    support_df.to_csv(save_dir / f'{dataset}-{difficulty}-support.csv', index=False, sep=';')
 
 
 if __name__ == "__main__":
@@ -179,11 +192,11 @@ if __name__ == "__main__":
     preprocess_raw('test', tokenizer)
 
     # Generate questions without distractors
-    generate_questions('train', tokenizer, add_distractor=False, save_supporting=True)
-    generate_questions('dev', tokenizer, add_distractor=False, save_supporting=True)
-    generate_questions('test', tokenizer, add_distractor=False, save_supporting=True)
+    generate_questions('train', tokenizer, add_distractor=False)
+    generate_questions('dev', tokenizer, add_distractor=False)
+    generate_questions('test', tokenizer, add_distractor=False)
 
     # Generate questions with distractors
-    generate_questions('train', tokenizer, add_distractor=True, save_supporting=True)
-    generate_questions('dev', tokenizer, add_distractor=True, save_supporting=True)
-    generate_questions('test', tokenizer, add_distractor=True, save_supporting=True)
+    generate_questions('train', tokenizer, add_distractor=True)
+    generate_questions('dev', tokenizer, add_distractor=True)
+    generate_questions('test', tokenizer, add_distractor=True)
