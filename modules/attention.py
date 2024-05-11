@@ -29,9 +29,6 @@ class AttentionMechanism(nn.Module):
 
         self.dropout = nn.Dropout(dropout)
 
-        #self.q_layernorm = nn.LayerNorm(self.head_dim)
-        #self.k_layernorm = nn.LayerNorm(self.head_dim)
-
         # Stack all weight matrices 1...h together for efficiency
         self.qkv_proj = nn.Linear(input_dim, 3 * embed_dim, bias=False)  # PaLM doesn't use bias terms here
         self.o_proj = nn.Linear(embed_dim, embed_dim)
@@ -67,11 +64,6 @@ class AttentionMechanism(nn.Module):
         qkv = qkv.permute(0, 2, 1, 3)  # [Batch, Head, SeqLen, Dims]
         q, k, v = qkv.chunk(3, dim=-1)
 
-        # Apply QK-Layernorm
-        # LINK: https://arxiv.org/pdf/2309.14322.pdf
-        #q = self.q_layernorm(q)
-        #k = self.k_layernorm(k)
-
         # Sniff Q, K, to calculate how many embeddings from each are in the convex hull
         # NOTE: While debugging, this sometimes fails due to deficient Q, K. 
         #       Some layers must have really strange projections... the Q/K matrices are all zeros!
@@ -93,10 +85,10 @@ class AttentionMechanism(nn.Module):
         # Get attention logits and add attention mask
         attn_logits = self.get_logits(q, k)
         if mask is not None:
-            attn_logits += mask.unsqueeze(1)  # add head dimension for proper broadcasting
+            attn_logits = attn_logits.masked_fill(mask == 0, -65504.0) # smallest half-precision number
 
         # Retrieve attention weights and values
-        attention = self.softmax_fn(attn_logits.nan_to_num(), dim=-1)  # TODO: I need to make mask application better so that I don't have to keep calling nan_to_num()
+        attention = self.softmax_fn(attn_logits, dim=-1)
         # for i in range(self.num_heads):
         #     self.query_point[i] = q[0][i][-1].cpu()
         #     self.k_matrix[i] = k[0][i].cpu()
