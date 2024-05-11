@@ -17,8 +17,9 @@ class OpenbookQAModel(TransformerGPT):
         super().__init__(vocab_size, d_model, N, heads, dropout, opt)
 
     def configure_optimizers(self):
+        # So far, Adam with no scheduler has performed better than using a scheduler or another optimizer + a scheduler. 
         optimizer = torch.optim.Adam(self.parameters(), lr=self.opt.lr, betas=(0.9, 0.98), eps=1e-9)
-        scheduler = REXScheduler(optimizer, num_steps=opt.num_steps)
+        # scheduler = REXScheduler(optimizer, num_steps=opt.num_steps)
         # return {
         #     "optimizer": optimizer,
         #     "lr_scheduler": {
@@ -108,10 +109,10 @@ def get_model(opt, vocab_size):
             if p.dim() > 1:
                 nn.init.xavier_uniform_(p) 
     
-    return model    
+    return model
 # !SECTION: Model Definition
 
-# SECTION: Dataloaders and LightningModules
+# SECTION: Datasets
 class OpenbookQADataset(torch.utils.data.Dataset):
     def __init__(self, dataset_path: Path, tokenizer):
         super().__init__()
