@@ -40,7 +40,7 @@ class CosineWarmupRestartScheduler(optim.lr_scheduler.SequentialLR):
 # SECTION: REX Learning Rate Scheduler
 class REXScheduler(optim.lr_scheduler._LRScheduler):
     '''
-    Reflected Exponential Scheduler for good convergence results without hyperparamters to tune (besides initial LR)
+    Reflected Exponential Scheduler for good convergence results without hyperparameters to tune (besides initial LR)
     # LINK: https://arxiv.org/pdf/2107.04197.pdf
     '''
     def __init__(
