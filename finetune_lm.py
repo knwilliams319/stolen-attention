@@ -9,8 +9,7 @@ from lightning.pytorch.callbacks import ModelCheckpoint, ModelSummary, LearningR
 from sentencepiece import SentencePieceProcessor
 from lightning.pytorch.loggers import CSVLogger
 
-from modules.transformer import CausalTransformer
-from modules.lr_scheduler import REXScheduler
+from modules import CausalTransformer, REXScheduler
 #!SECTION
 
 # SECTION: Datasets
