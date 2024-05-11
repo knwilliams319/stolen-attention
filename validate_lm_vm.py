@@ -91,16 +91,16 @@ class Wikitext103Model(CausalTransformer):
     def __init__(self, **model_kwargs):
         # Initialize model as per usual, but add extra state to track token statistics
         super().__init__(**model_kwargs)
-        self.all_attn_weights = {}
-        self.all_attn_norms = {}
-        self.all_query_norms = {}
-        #self.batch_no = []
-        self.all_token_ids = []
+        # self.all_attn_weights = {}
+        # self.all_attn_norms = {}
+        # self.all_query_norms = {}
+        # #self.batch_no = []
+        # self.all_token_ids = []
         
-        for i in range(self.hparams.num_heads):
-            self.all_attn_norms[i] = []
-            self.all_attn_weights[i] = []
-            self.all_query_norms[i] = []
+        # for i in range(self.hparams.num_heads):
+        #     self.all_attn_norms[i] = []
+        #     self.all_attn_weights[i] = []
+        #     self.all_query_norms[i] = []
 
         # self.batch_no = []
         # self.n_vertices = {}
@@ -156,25 +156,25 @@ class Wikitext103Model(CausalTransformer):
             # return torch.mean(loss)  # return mean so that logging doesn't error
 
             # Capture statistics that are layer-agnostic
-            token_ids = data[0].cpu().numpy()
+            # token_ids = data[0].cpu().numpy()
             #self.batch_no.append(batch_idx.item())
-            self.all_token_ids.append(token_ids)
+            # self.all_token_ids.append(token_ids)
             # self.n_tokens.append(len(token_ids))
 
-            for l, layer in enumerate(self.transformer.layers):
-                # self.all_attn_weights.append(layer.self_attn.attn_weights.numpy())
+            # for l, layer in enumerate(self.transformer.layers):
+            #     # self.all_attn_weights.append(layer.self_attn.attn_weights.numpy())
                 
-                for h in range(self.hparams.num_heads):
-                    # vertices = sorted(layer.self_attn.k_hull[h].vertices)
-                    k_norms = torch.norm(layer.self_attn.k_matrix[h], dim=-1).numpy()
-                    weights = layer.self_attn.attn_weights[h].numpy()
-                    query_norm = torch.norm(layer.self_attn.query_point[h], dim=-1).numpy()
-                    # k_hull = layer.self_attn.k_hull[h]
+            #     for h in range(self.hparams.num_heads):
+            #         # vertices = sorted(layer.self_attn.k_hull[h].vertices)
+            #         k_norms = torch.norm(layer.self_attn.k_matrix[h], dim=-1).numpy()
+            #         weights = layer.self_attn.attn_weights[h].numpy()
+            #         query_norm = torch.norm(layer.self_attn.query_point[h], dim=-1).numpy()
+            #         # k_hull = layer.self_attn.k_hull[h]
 
-                    # Append statistics to internal state
-                    self.all_query_norms[h].append(query_norm)
-                    self.all_attn_norms[h].append(k_norms)
-                    self.all_attn_weights[h].append(weights)
+            #         # Append statistics to internal state
+            #         self.all_query_norms[h].append(query_norm)
+            #         self.all_attn_norms[h].append(k_norms)
+            #         self.all_attn_weights[h].append(weights)
 
                     # # Initialize list of statistics for this head
                     # if h not in self.n_vertices:
@@ -285,7 +285,7 @@ class Wikitext103Model(CausalTransformer):
 # SECTION: Training parameters
 # TODO: make these CLI arguments instead of constants 
 CHECKPOINT_BASE = "./experiments/1_layer_8_heads/"
-EXPERIMENT = "man"
+EXPERIMENT = "oracle"
 CHECKPOINT_DIR = CHECKPOINT_BASE + '/' + EXPERIMENT
 VALID_PATH = "./data/wikitext-103/unigram.wiki.valid.tokens.tokenized.pt"
 TOKENIZER_PATH = "./unigram-tokenizer/tokenizer.model"
@@ -346,22 +346,22 @@ if __name__ == "__main__":
     sliding_mode = True
     trainer.test(model, dataloaders=val_loader_flat, verbose=True)
 
-    for i in range(8):
-        weights = np.array(model.all_attn_weights[i])
-        weights_path = checkpoint_dir / f'attn_weights-wdw={WINDOW_LENGTH}-stride={STRIDE}-head={i}.npy'
-        np.save(weights_path, weights)
+    # for i in range(8):
+    #     weights = np.array(model.all_attn_weights[i])
+    #     weights_path = checkpoint_dir / f'attn_weights-wdw={WINDOW_LENGTH}-stride={STRIDE}-head={i}.npy'
+    #     np.save(weights_path, weights)
 
-        norms = np.array(model.all_attn_norms[i])
-        norms_path = checkpoint_dir / f'attn_norms-wdw={WINDOW_LENGTH}-stride={STRIDE}-head={i}.npy'
-        np.save(norms_path, norms)
+    #     norms = np.array(model.all_attn_norms[i])
+    #     norms_path = checkpoint_dir / f'attn_norms-wdw={WINDOW_LENGTH}-stride={STRIDE}-head={i}.npy'
+    #     np.save(norms_path, norms)
 
-        q_norms = np.array(model.all_query_norms[i])
-        q_norms_path = checkpoint_dir / f'attn_query_norms-wdw={WINDOW_LENGTH}-stride={STRIDE}-head={i}.npy'
-        np.save(q_norms_path, q_norms)
+    #     q_norms = np.array(model.all_query_norms[i])
+    #     q_norms_path = checkpoint_dir / f'attn_query_norms-wdw={WINDOW_LENGTH}-stride={STRIDE}-head={i}.npy'
+    #     np.save(q_norms_path, q_norms)
     
-    token_ids = np.array(model.all_token_ids)
-    token_ids_path = checkpoint_dir / f'token_ids-wdw={WINDOW_LENGTH}-stride={STRIDE}.npy'
-    np.save(token_ids_path, token_ids)
+    # token_ids = np.array(model.all_token_ids)
+    # token_ids_path = checkpoint_dir / f'token_ids-wdw={WINDOW_LENGTH}-stride={STRIDE}.npy'
+    # np.save(token_ids_path, token_ids)
 
     # avg_losses = [pd.NA]*16000
     # variances = [pd.NA]*16000

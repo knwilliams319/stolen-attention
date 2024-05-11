@@ -157,18 +157,28 @@ class CausalTransformer(L.LightningModule):
         # Project outputs
         x = self.output_proj(x)
         return x
-
-    @torch.no_grad()
-    def get_attention_maps(self, x, mask=None):
+    
+    def get_hidden_states(self, x, pad_mask=None):
         """
-        Function for extracting the attention matrices of the whole Transformer for a single batch.
-
-        Input arguments same as the forward pass.
+        Same as forward, but omits the output projection at the last step. Useful when fine-tuning.
         """
-        x = self.input_net(x)
+        n_batches, seq_len = x.size()
+        mask = self.causal_mask[:seq_len, :seq_len]       # grab causal mask for sequences of this size
+        mask = mask.unsqueeze(0).repeat(n_batches, 1, 1)  # add batch dimension and copy causal mask along it
+        if pad_mask is not None:                          # if supplied, 'pad_mask' will contain -inf at pad positions to ignore
+            mask += pad_mask.unsqueeze(1) # pad_mask.shape --> [Batch, 1, SeqLen]; applies pad_mask to every position of the sequence for a given batch
+        mask = torch.nan_to_num(mask)
+
+        # Project inputs, scale embeddings, apply positional encoding, and apply dropout
+        x = self.input_proj(x)
+        x *= self.embed_scale # Original Vaswani paper says they scale embedding layers' weights by sqrt(model_dim). Spike No More says it is crucial to avoiding a type of gradient explosion. 
         x = self.positional_encoding(x)
-        attention_maps = self.transformer.get_attention_maps(x, mask=mask)
-        return attention_maps
+        x = self.dropout(x)
+
+        # Send data through the decoder layers and normalize outputs
+        x = self.transformer(x, mask=mask)
+        x = self.output_norm(x)
+        return x
 
     def configure_optimizers(self, params_list=None):
         # Determine the learning rate for the temperatures' parameter group
@@ -250,7 +260,16 @@ class CausalTransformer(L.LightningModule):
     
 # SECTION: A Fine-Tuning Head Built on Top of a Causal Transformer
 class FinetuneHead(L.LightningModule):
-    def __init__(self, pretrained_path, num_classes, num_steps, lr=1e-3, dropout=0.0, attn_dropout=0.0, activation_dropout=0.0):
+    def __init__(
+            self, 
+            pretrained_path, 
+            num_classes, 
+            num_steps, 
+            lr=1e-3, 
+            dropout=0.0, 
+            attn_dropout=0.0, 
+            activation_dropout=0.0
+        ):
         '''FinetuneHead. Used to train a classification head on top of a pretrained Transformer. 
 
         Args:
@@ -262,59 +281,60 @@ class FinetuneHead(L.LightningModule):
             activation_dropout (float): dropout to apply to the activations of FFNs of Transformer during fine-tuning
         '''
         super().__init__()
+        self.save_hyperparameters()
+        self._create_model()
 
-        # Save our learning rate and num_steps for use by self.configure_optimizers()
-        # TODO: Should I use a different learning rate for the classification head and the model params?
-        self.lr = lr
-        self.num_steps = num_steps
-
+    def _create_model(self):
         # Load pretrained model. Override lr, num_steps, and dropout proportions to better fit the fine-tuning task
-        self.model = CausalTransformer.load_from_checkpoint(
-            pretrained_path, 
-            lr=lr,
-            num_steps=num_steps,
-            dropout=dropout,
-            attn_dropout=attn_dropout,
-            activation_dropout=activation_dropout
+        self.backbone = CausalTransformer.load_from_checkpoint(
+            self.hparams.pretrained_path, 
+            # dropout=self.hparams.dropout,
+            # attn_dropout=self.hparams.attn_dropout,
+            # activation_dropout=self.hparams.activation_dropout
         )
 
-        # Create fine-tuning head
+        # Deactivate original classification head and create a new one for the task
         # TODO: Play around with activation functions and dropout in the classification head?
-        #       Could have a multi-layered head or apply them to the outputs of the pretrained model
-        self.cls_head = nn.Linear(self.model.hparams.num_classes, num_classes)
+        #      Could have a multi-layered head or apply them to the outputs of the pretrained model
+        self.backbone.output_proj.weight.requires_grad = False  # output_proj has no bias term
+        self.new_output_proj = nn.Linear(self.backbone.hparams.model_dim, self.hparams.num_classes, bias=False)
+
+        # Initialize fine-tuning head using Spike No More
+        # LINK: https://arxiv.org/pdf/2312.16903.pdf#page10
+        sigma_main = math.sqrt(2/(5*self.backbone.hparams.model_dim))
+        nn.init.normal_(self.new_output_proj.weight, mean=0, std=sigma_main)
 
     def forward(self, x, pad_mask=None):
-        x = self.model(x, pad_mask=pad_mask)
-        x = x[:, -1] # take hidden state for last position of the sequence
-        x = self.cls_head(x)
+        # Get the hidden states for each timestep
+        x = self.backbone.get_hidden_states(x, pad_mask=pad_mask)
+
+        # Grab the last hidden state and put it through our new classification head
+        x = x[:, -1]
+        x = self.new_output_proj(x)
         return x
     
     def configure_optimizers(self):
-        # Freeze all weights except the attention layer of the pretrained model and the classification head
-        # for name, param in self.named_parameters():
-        #     if ('self_attn' not in name) and ('cls_head' not in name):
-        #         param.requires_grad = False
-        
-        # Reinitialize the weights of attention layers using Spike No More (classification head is Xavier_Normal by default)
-        # sigma_main = math.sqrt(2/(5*self.model.hparams.model_dim))
-        # sigma_proj = sigma_main / math.sqrt(2*self.model.hparams.num_layers)
-        # for encoder_layer in self.model.transformer.layers:
-        #     encoder_layer.self_attn.init_modules(sigma_main, sigma_proj)
+        # Filter params from new classification head vs. pretrained weights
+        new_params = self.new_output_proj.parameters()
+        pretrained_params = list(filter(lambda p: p.requires_grad, self.backbone.parameters()))
 
-        # Filter weights without gradients
-        trainable_params = filter(lambda p: p.requires_grad, self.parameters())
+        # Make param groups such that pretrained weights use a 10x smaller learning rate
+        param_split = [
+            {'params': new_params},
+            {'params': pretrained_params, 'lr': self.hparams.lr / 10}
+        ]
 
         # Initialize the optimizer and scheduler
         optimizer = optim.RAdam(
-            trainable_params,
-            lr=self.lr,
+            param_split,
+            lr=self.hparams.lr,
             betas=(0.9, 0.99),
             eps=1e-6,
             weight_decay=1e-4
         )
         self.lr_scheduler = REXScheduler(
             optimizer,
-            num_steps=self.num_steps
+            num_steps=self.hparams.num_steps
         )
         return optimizer
 

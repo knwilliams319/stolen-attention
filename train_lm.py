@@ -171,8 +171,8 @@ class Wikitext103Model(CausalTransformer):
   
 # SECTION: Training parameters
 # TODO: make these CLI arguments instead of constants 
-CHECKPOINT_BASE = "./experiments/1_layer_8_heads"
-EXPERIMENT = "oracle"
+CHECKPOINT_BASE = "./experiments/12_layers_12_heads"
+EXPERIMENT = "base"
 CHECKPOINT_DIR = CHECKPOINT_BASE + '/' + EXPERIMENT
 
 TRAIN_PATH = "./data/wikitext-103/unigram.wiki.train.tokens.tokenized.pt"
@@ -192,6 +192,20 @@ if __name__ == "__main__":
     #     if input() == 'Y':
     #         shutil.rmtree(checkpoint_path)
     checkpoint_path.mkdir(parents=True, exist_ok=True)
+
+    # Initialize tokenizer
+    tokenizer = SentencePieceProcessor(model_file=TOKENIZER_PATH)
+    # tokenizer = GPT2TokenizerFast(vocab_file=TOKENIZER_VOCAB, merges_file=TOKENIZER_MERGES)
+
+    # Create dataloaders
+    train_dataset = Wikitext103Dataset(TRAIN_PATH, tokenizer.pad_id(), len(tokenizer))
+    val_dataset = FlattenedWikitext103Dataset(VALID_PATH, tokenizer.pad_id(), len(tokenizer), stride=256, window_length=512)
+    #test_dataset = Wikitext103Dataset(TEST_PATH, tokenizer.pad_id(), len(tokenizer))
+
+    BATCH_SIZE = 64  # NOTE: in '16-mixed', we can use 80
+    train_loader = data.DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, drop_last=True, num_workers=3, pin_memory=True)
+    val_loader = data.DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, drop_last=False, num_workers=3)
+    #test_loader = data.DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, drop_last=False, num_workers=3)
 
     # Set up for training. Seed random seeds and initialize Trainer. 
     L.seed_everything(7, workers=True)
@@ -214,14 +228,14 @@ if __name__ == "__main__":
             ),
             ModelCheckpoint(
                 save_weights_only=False,
-                every_n_train_steps=1000,
+                every_n_train_steps=len(train_loader),
                 dirpath=CHECKPOINT_DIR,
                 filename='last-{epoch:02d}-{step:02d}'
             ),
-            LearningRateMonitor(logging_interval='step')
+            # LearningRateMonitor(logging_interval='step')
         ],
         accelerator="gpu",
-        devices=3,         # TODO: Change this back to 3 (David was running an experiment on GPU0)
+        devices=3,                 # TODO: Change this back to 3 (David was running an experiment on GPU0)
         strategy="ddp",
         precision="16-mixed",      # TODO: Use 32-true?
         max_epochs=25,
@@ -234,66 +248,27 @@ if __name__ == "__main__":
     )
     trainer.logger._default_hp_metric = None  # Optional logging argument that we don't need
 
-    # Initialize tokenizer
-    tokenizer = SentencePieceProcessor(model_file=TOKENIZER_PATH)
-    # tokenizer = GPT2TokenizerFast(vocab_file=TOKENIZER_VOCAB, merges_file=TOKENIZER_MERGES)
-
-    # Create dataloaders
-    train_dataset = Wikitext103Dataset(TRAIN_PATH, tokenizer.pad_id(), len(tokenizer))
-    val_dataset = FlattenedWikitext103Dataset(VALID_PATH, tokenizer.pad_id(), len(tokenizer), stride=256, window_length=512)
-    #test_dataset = Wikitext103Dataset(TEST_PATH, tokenizer.pad_id(), len(tokenizer))
-
-    BATCH_SIZE = 64  # NOTE: in '16-mixed', we can use 80
-    train_loader = data.DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, drop_last=True, num_workers=3, pin_memory=True)
-    val_loader = data.DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, drop_last=False, num_workers=3)
-    #test_loader = data.DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, drop_last=False, num_workers=3)
-
-    # Check whether pretrained model exists. If yes, load it and skip training
-    pretrained_filename = Path(CHECKPOINT_DIR, "Wikitext103Model.ckpt")
-    if pretrained_filename.exists() and pretrained_filename.is_file():
-        print("Found pretrained model, loading...")
-        model = Wikitext103Model.load_from_checkpoint(pretrained_filename)
-    else:
+    # Check whether a checkpoint exists in this directory. If so, exit with error as to not overwrite any data due to missed input.
+    if len(list(checkpoint_path.glob('*.ckpt'))) == 0:
         model = Wikitext103Model(
             num_classes=len(tokenizer),
             max_context_len=512,
-            model_dim=4096,
-            attention_norm=None,                      # Use None for dot-product attention
+            model_dim=768,
+            attention_norm=None,                                                  # Use None for dot-product attention, 1 for Manhattan, or 2 for Euclidean
             learn_temperatures=False,
             positional_temperatures=False,
-            num_heads=8,
-            num_layers=1,
-            dropout=0.0,
-            attn_dropout=0.0,
-            activation_dropout=0.0,
-            ffn_dim=16386,
+            num_heads=12,
+            num_layers=12,
+            dropout=0.1,
+            attn_dropout=0.1,
+            activation_dropout=0.1,
+            ffn_dim=3072,
             use_pos_encoding=True,
-            lr=3e-4,                                                              # used for AdamW/Lion initialization
+            lr=1e-4,                                                              # used for AdamW/Lion initialization
             num_steps=trainer.max_epochs*len(train_loader)/trainer.num_devices,   # used for REX Scheduler
-            temperature_lr_scale=0.1                                              # sets lr for temperature params to scale*lr
+            temperature_lr_scale=0.0                                              # sets lr for temperature params to scale*lr
         )
-        #trainer.validate(model=model, dataloaders=val_loader)
-        #torch.save({'state_dict': model.state_dict()}, Path(CHECKPOINT_DIR, 'state_dict_3'))
         trainer.fit(model, train_loader, val_loader)
-        #trainer.validate(model=model, dataloaders=val_loader)
-
-        #tuner = Tuner(trainer)
-        #tuner.lr_find(
-        #     model,
-        #     train_dataloaders=train_loader,
-        #     val_dataloaders=val_loader,
-        #     early_stop_threshold=None,
-        #     num_training=500
-        # )
-        # model = Wikitext103Model.load_from_checkpoint(trainer.checkpoint_callback.best_model_path)
-
-    # Test best model on validation and test set
-    # train_result = trainer.test(model, dataloaders=train_loader, verbose=False)
-    # val_result = trainer.test(model, dataloaders=val_loader, verbose=False)
-    # test_result = trainer.test(model, dataloaders=test_loader, verbose=False)
-    # result = {
-    #     "test_acc": test_result[0]["test_acc"],
-    #     "val_acc": val_result[0]["test_acc"],
-    #     "train_acc": train_result[0]["test_acc"],
-    # }
+    else:
+        raise ValueError(f"Directory {checkpoint_path} already contains pretrained model checkpoints!")
 #!SECTION
