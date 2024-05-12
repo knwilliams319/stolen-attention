@@ -8,6 +8,7 @@ import time
 import copy
 import math
 import pickle
+from pathlib import Path
 
 import torch
 import torch.nn.functional as F
@@ -282,7 +283,7 @@ def get_modelGPT(opt, vocab_size):
        
     if opt.loadname is not None:
         print("loading pretrained weights...")
-        model.load_state_dict(torch.load(opt.loadname + '/model_weights'))
+        model.load_state_dict(torch.load(Path(__file__).parent / 'experiments/model_weights'))
     else:
         for p in model.parameters():
             if p.dim() > 1:
@@ -1026,7 +1027,7 @@ def finetune_c(model,opt,tokenizer):
     count = 0
     
     data = []
-    with open('obqa.train.txt','rt') as f:
+    with (Path(__file__).parent / 'data/obqa.train.txt').open() as f:
         for line in f:
             line = line.replace('\n','')
             tokens = line.split('|')
@@ -1253,47 +1254,48 @@ def main():
     time_name = time.strftime("%y%m%d_%H%M%S")
     opt.time_name = time_name
 #    dir_name = "gaussian_transformer//" + time_name
-    dir_name = "saved/%s" % (opt.dir_name)
-    if not os.path.exists(dir_name):
-        os.makedirs(dir_name)
-    source_name = sys.argv[0]
-    dir_name = dir_name + "//"
-    opt.dir_name = dir_name
-    shutil.copy(source_name,dir_name + source_name)
-    opt.log_file = dir_name + "santa.txt"
+    # NOTE: I'm commenting out this whole block
+    # dir_name = "saved/%s" % (opt.dir_name)
+    # if not os.path.exists(dir_name):
+    #     os.makedirs(dir_name)
+    # source_name = sys.argv[0]
+    # dir_name = dir_name + "//"
+    # opt.dir_name = dir_name
+    # shutil.copy(source_name,dir_name + source_name)
+    # opt.log_file = dir_name + "santa.txt"
     
-    text = opt.log_file
-    OutText(opt.log_file,opt)   
-    OutText(str(opt),opt)
+    # text = opt.log_file
+    # OutText(opt.log_file,opt)   
+    # OutText(str(opt),opt)
     
     tokenizer = GPT2TokenizerFast.from_pretrained("gpt2")    
-    if False:
-        tokenizer = GPT2TokenizerFast.from_pretrained("gpt2")
-        opt.train = read_corpus('wiki.train.txt',tokenizer)
-        opt.valid = read_corpus('wiki.valid.txt',tokenizer)
-        opt.test = read_corpus('wiki.test.txt',tokenizer)
-        with open('wiki.train.pkl','wb') as f:
-            pickle.dump(opt.train,f)
-            f.close()
-        with open('wiki.valid.pkl','wb') as f:
-            pickle.dump(opt.valid,f)
-            f.close()
-        with open('wiki.test.pkl','wb') as f:
-            pickle.dump(opt.test,f)
-            f.close()
-        sys.exit(0)
-    else:
-        with open('wiki.train.pkl','rb') as f:
-            opt.train = pickle.load(f)
-            f.close()
-        with open('wiki.valid.pkl','rb') as f:
-            opt.valid = pickle.load(f)
-            f.close()
-        with open('wiki.test.pkl','rb') as f:
-            opt.test = pickle.load(f)
-            f.close()
+    # if False:
+    #     tokenizer = GPT2TokenizerFast.from_pretrained("gpt2")
+    #     opt.train = read_corpus('wiki.train.txt',tokenizer)
+    #     opt.valid = read_corpus('wiki.valid.txt',tokenizer)
+    #     opt.test = read_corpus('wiki.test.txt',tokenizer)
+    #     with open('wiki.train.pkl','wb') as f:
+    #         pickle.dump(opt.train,f)
+    #         f.close()
+    #     with open('wiki.valid.pkl','wb') as f:
+    #         pickle.dump(opt.valid,f)
+    #         f.close()
+    #     with open('wiki.test.pkl','wb') as f:
+    #         pickle.dump(opt.test,f)
+    #         f.close()
+    #     sys.exit(0)
+    # else:
+    #     with open('wiki.train.pkl','rb') as f:
+    #         opt.train = pickle.load(f)
+    #         f.close()
+    #     with open('wiki.valid.pkl','rb') as f:
+    #         opt.valid = pickle.load(f)
+    #         f.close()
+    #     with open('wiki.test.pkl','rb') as f:
+    #         opt.test = pickle.load(f)
+    #         f.close()
     
-    obs = len(opt.train)
+    # obs = len(opt.train)
     opt.vocab_size = 50257
     temp = []
     for i in range(opt.vocab_size):
@@ -1305,8 +1307,8 @@ def main():
         
     model_parameters = filter(lambda p: p.requires_grad, model.parameters())
     params = sum([np.prod(p.size()) for p in model_parameters])        
-    text = 'total params: %d' % (params)
-    OutText(text,opt)
+    # text = 'total params: %d' % (params)
+    # OutText(text,opt)
 
     opt.optimizer = torch.optim.Adam(model.parameters(), lr=opt.lr, betas=(0.9, 0.98), eps=1e-9)
     if opt.SGDR == True:
