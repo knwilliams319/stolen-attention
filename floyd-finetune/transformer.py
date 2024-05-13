@@ -159,12 +159,12 @@ class TransformerGPT(L.LightningModule):
         self.opt = opt
 
         # Causal attention mask which ignores tokens beyond the current position
-        causal_mask = torch.tril(torch.ones(opt.batchsize, opt.seqlen, opt.seqlen))
+        causal_mask = torch.tril(torch.ones(opt.seqlen, opt.seqlen))
         self.register_buffer("causal_mask", causal_mask, persistent=False)
 
     def forward(self, trg, trg_mask=None):
         batch_size, seq_len = trg.shape
-        mask = self.causal_mask[:batch_size,:seq_len,:seq_len]
+        mask = self.causal_mask[:seq_len,:seq_len].unsqueeze(0).repeat(batch_size, 1, 1)
         if trg_mask is not None:
             trg_mask = trg_mask.unsqueeze(1).repeat(1, seq_len, 1)
             mask = mask.masked_fill(trg_mask==0, 0)

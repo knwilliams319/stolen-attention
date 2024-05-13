@@ -33,7 +33,7 @@ class OpenbookQADataset(torch.utils.data.Dataset):
         
         # Make a prompt and tokenize the examples 
         self.prompts = []
-        lengths = []
+        self.lengths = []
         self.answers = []
         for example in data:
             if example['answer'] == 'A':
@@ -50,18 +50,17 @@ class OpenbookQADataset(torch.utils.data.Dataset):
                 text = '[CLS] %s %s %s [END]' % (example['fact'], example['stem'], example[choice])
                 tokens = tokenizer(text)['input_ids']
                 self.prompts.append(tokens)
-                lengths.append(len(tokens))
+                self.lengths.append(len(tokens))
         del data
         
         # Left-pad the questions to the same length, and create padding masks to ignore those positions when calcuating attention
-        max_length = max(lengths)
+        max_length = max(self.lengths)
         self.pad_masks = torch.zeros((len(self.prompts), max_length))
         for i, prompt in enumerate(self.prompts):
-            self.pad_masks[i][-lengths[i]:] = 1
-            padding = [0] * (max_length - lengths[i])
+            self.pad_masks[i][-self.lengths[i]:] = 1
+            padding = [0] * (max_length - self.lengths[i])
             self.prompts[i] = padding + prompt
         self.prompts = torch.tensor(self.prompts)
-        del lengths
 
         # Save vocab size to generate logit masks at runtime (pre-creating them requires more memory than we have)
         self.vocab_size = len(tokenizer)
@@ -79,16 +78,15 @@ class OpenbookQADataset(torch.utils.data.Dataset):
         answer = self.answers[idx]
         padding_mask = self.pad_masks[idx:idx+4]  # NOTE: if I run out of memory, I should make the padding masks at runtime, too
 
-        # NOTE: [CLS] token is encoded as [58, 5097, 50, 60]
-
         # Create the numer_mask and denom_mask to compute model's likelihood of the given sequence
         numer_mask = torch.zeros((len(tokens), self.context_length, len(tokenizer)))  # TODO: this and the pad_mask should prolly be boolTensors
         denom_mask = torch.zeros((len(tokens), self.context_length, len(tokenizer)))
         for i, sequence in enumerate(tokens):
-            for pos, token in enumerate(sequence):
-                if token != 0: # skip pad tokens
-                    numer_mask[i][pos][token] = 1
-                    denom_mask[i][pos][:] = 1
+            length_idx = idx + i
+            last_cls_token = len(sequence) - self.lengths[length_idx] + 3  # NOTE: [CLS] token is encoded as [58, 5097, 50, 60]
+            for pos in range(last_cls_token, len(sequence)-1):
+                numer_mask[i][pos][sequence[pos+1]] = 1  # Given tokens up until pos, model outputs probability of next token
+                denom_mask[i][pos][:] = 1
         return tokens, answer, padding_mask, numer_mask, denom_mask
 # !SECTION
     
@@ -112,21 +110,37 @@ class OpenbookQAModel(TransformerGPT):
         return optimizer
     
     def _calculate_loss(self, batch):
-        data, answer, pad_mask, numer_mask, denom_mask = batch
-        data, pad_mask, numer_mask, denom_mask = data.squeeze(0), pad_mask.squeeze(0), numer_mask.squeeze(0), denom_mask.squeeze(0)
+        data, answers, pad_mask, numer_mask, denom_mask = batch
+        bsz, n_seq, seq_len, vocab_size = numer_mask.shape  # n_seq should always be 4
+        b_dim = bsz * n_seq
+        data, pad_mask, numer_mask, denom_mask = data.view(b_dim,-1), pad_mask.view(b_dim,-1), numer_mask.view(b_dim,seq_len,-1), denom_mask.view(b_dim,seq_len,-1)
         logits = torch.exp(self(data, trg_mask=pad_mask))
 
         # Try David's custom-built F.cross_entropy that's only over the answer space despite technically allowing the model to output any token
         # NOTE: GPT2Tokenizer has this mapping: A-->317, B-->347, C-->327, D-->360
+        # MY ATTEMPTED FIX
+        # denominators = torch.sum(logits, dim=-1) # TODO: might be able to delete and remove the denom_mask
+        # numerators = torch.sum(logits * numer_mask, dim=-1)
+        # token_probs = numerators / denominators # NOTE: padded positions will end up as 0s here
+        # token_probs = -torch.log(token_probs) # avoid underflow by w/ neg log probs
+        # sequence_probs = torch.sum(token_probs.nan_to_num(posinf=0), dim=-1) # ignored positions will be +inf, make them 0 so they don't contribute to sum
+        # sequence_probs = sequence_probs / pad_mask.sum(dim=1) # normalize by prompt length
+        # probs = torch.exp(sequence_probs) # exponentiate for softmax
+        # loss = -torch.log(probs[answer] / probs.sum()) # probability assigned to answer sequence
+
+        # ORIGINAL CODE FROM DAVID
         denominators = torch.sum(torch.sum(logits * denom_mask, dim=2), dim=1) # TODO: support multiple batches, this will sum up everything...
         numerators = torch.sum(torch.sum(logits * numer_mask, dim=2), dim=1)  # exponentiate score assigned to correct answer choice for each quesiton
         prompt_lengths = pad_mask.sum(dim=1)
         probs = (numerators / denominators) / prompt_lengths
-        loss = -torch.log(probs[answer] / probs.sum()) # TODO: when I support multiple batches, I'll need to sum losses for each group of 4 and divide by batch size
+        probs = probs.reshape(b_dim//n_seq, n_seq)
+        choices = probs[torch.arange(bsz), answers]
+        losses = -torch.log(choices / probs.sum(dim=-1))
+        loss = losses.sum() / bsz
 
         # Also find the number of correct answers. The model's chosen answer is the one with the highest logit. 
-        correct = 1 if probs.argmax() == answer else 0
-        return loss, correct
+        num_correct = torch.sum(probs.argmax(dim=-1) == answers)
+        return loss, num_correct
     
     def training_step(self, batch, batch_idx):
         loss, _ = self._calculate_loss(batch)
@@ -209,9 +223,9 @@ if __name__ == "__main__":
     parser.add_argument('-n_layers', type=int, default=12)
     parser.add_argument('-heads', type=int, default=12)
     parser.add_argument('-dropout', type=int, default=0.1)
-    parser.add_argument('-batchsize', type=int, default=1) # TODO: support higher batch sizes
+    parser.add_argument('-batchsize', type=int, default=4) # TODO: support higher batch sizes
     parser.add_argument('-printevery', type=int, default=100)
-    parser.add_argument('-lr', type=float, default=0.00001)
+    parser.add_argument('-lr', type=float, default=1e-5)
     parser.add_argument('-seqlen', type=int, default=512)
     parser.add_argument('-norm', type=float, default=2.0)
     opt = parser.parse_args()
