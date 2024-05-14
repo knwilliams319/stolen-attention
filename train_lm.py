@@ -134,7 +134,7 @@ class Wikitext103Model(CausalTransformer):
         self.log(
             "train_loss",
             loss, 
-            sync_dist=True,       # this doesn't seem to impact training time, likely because we have only 3 devices
+            sync_dist=True,        # this doesn't seem to impact training time, likely because we have only 3 devices
             on_step=True,
             on_epoch=True,
             rank_zero_only=False,  # this seems to slightly speed up training
@@ -233,7 +233,7 @@ if __name__ == "__main__":
     val_dataset = FlattenedWikitext103Dataset(VALID_PATH, tokenizer.pad_id(), len(tokenizer), stride=256, window_length=512)
     #test_dataset = Wikitext103Dataset(TEST_PATH, tokenizer.pad_id(), len(tokenizer))
 
-    BATCH_SIZE = 2  # NOTE: in '16-mixed', we can use 80
+    BATCH_SIZE = 64  # NOTE: in '16-mixed', we can use 80
     train_loader = data.DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, drop_last=True, num_workers=1)
     val_loader = data.DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, drop_last=False, num_workers=1)
     #test_loader = data.DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, drop_last=False, num_workers=3)
