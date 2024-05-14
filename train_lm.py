@@ -5,13 +5,17 @@ import torch
 import torch.nn.functional as F
 import torch.utils.data as data
 import lightning as L
-from lightning.pytorch.tuner.tuning import Tuner
-from lightning.pytorch.callbacks import ModelCheckpoint, ModelSummary, LearningRateMonitor
-from lightning.pytorch.profilers import AdvancedProfiler
+# from lightning.pytorch.tuner.tuning import Tuner
+from lightning.pytorch.callbacks import ModelCheckpoint, ModelSummary #, LearningRateMonitor
+# from lightning.pytorch.profilers import AdvancedProfiler
 from lightning.pytorch.loggers import CSVLogger
 from sentencepiece import SentencePieceProcessor
+from lightning.pytorch.strategies import FSDPStrategy
+
 
 import torch.optim as optim
+from functools import partial
+from torch.distributed.fsdp.wrap import size_based_auto_wrap_policy
 from modules import CausalTransformer, REXScheduler
 #!SECTION
 
@@ -34,21 +38,14 @@ class Wikitext103Dataset(data.Dataset):
 
     def __getitem__(self, idx):
         tokens = self.data[idx]
-        padding_mask = torch.zeros(self.context_length)
-        labels = torch.cat([
-            tokens[1:],
-            torch.tensor([self.data[idx+1][0]], dtype=tokens.dtype)
-        ])
-
-        # due to packing pretraining tokens, only the last index may include pad tokens
-        # labels = torch.cat([  # insert random token for last label
+        last_label = self.data[idx+1][0]
+        return tokens, last_label # NOTE: due to token packing, pretraining batches will never have padding and we don't need to return a mask
+        # labels = torch.cat([
         #     tokens[1:],
-        #     torch.randint(0, self.vocab_size, (1,), dtype=tokens.dtype)
+        #     torch.tensor([self.data[idx+1][0]], dtype=tokens.dtype)
         # ])
-        # padding_mask += float('-inf') * tokens.eq(self.pad_id)
-        # padding_mask = torch.nan_to_num(padding_mask)
+        # return tokens, labels, padding_mask
 
-        return tokens, labels, padding_mask
 class FlattenedWikitext103Dataset(data.Dataset):
     def __init__(self, tokens_path: str, pad_id: int, vocab_size: int, stride: int=1, window_length=None):
         super().__init__()
@@ -82,15 +79,16 @@ class FlattenedWikitext103Dataset(data.Dataset):
     def __getitem__(self, idx):
         strided_idx = idx * self.stride
         tokens = self.data[strided_idx:strided_idx+self.window_length]
-        padding_mask = torch.zeros(self.window_length)
-        labels = self.data[strided_idx+1:strided_idx+self.window_length+1]
-        return tokens, labels, padding_mask
+        last_label = self.data[strided_idx+self.window_length+1]
+        return tokens, last_label # NOTE: due to token packing, pretraining batches will never have padding and we don't need to return a mask
+        # labels = self.data[strided_idx+1:strided_idx+self.window_length+1]
+        # return tokens, labels, padding_mask
 # !SECTION
 
 class Wikitext103Model(CausalTransformer):
     def configure_optimizers(self):
         # Determine the learning rate for the temperatures' parameter group
-        temperature_lr = self.lr * self.hparams.temperature_lr_scale
+        temperature_lr = self.hparams.lr * self.hparams.temperature_lr_scale
 
         # Split the model's params into temperature and non-temperature groups
         all_params = self.named_parameters()
@@ -109,7 +107,7 @@ class Wikitext103Model(CausalTransformer):
         ]
 
         optimizer = optim.RAdam(param_split, lr=self.hparams.lr, betas=(0.9, 0.99), eps=1e-6, weight_decay=1e-4)
-        scheduler = REXScheduler(optimizer, num_steps=self.hparams.num_steps )
+        scheduler = REXScheduler(optimizer, num_steps=self.hparams.num_steps)
         return {
             "optimizer": optimizer,
             "lr_scheduler": {
@@ -120,14 +118,15 @@ class Wikitext103Model(CausalTransformer):
         }
 
     def _calculate_loss(self, batch, sliding=False):
-        data, labels, mask = batch
+        data, last_labels = batch
         data = data.int()
-        preds = self.forward(data, pad_mask=mask) # shape = [bsz, context_len, vocab_size]
+        preds = self(data) # shape = [bsz, context_len, vocab_size]
         if sliding:
             preds = preds[:, -1]
-            labels = labels[:, -1].long()
-            return F.cross_entropy(preds, labels)
+            last_labels = last_labels.long()
+            return F.cross_entropy(preds, last_labels)
         else:
+            labels = torch.cat([data[:, 1:], last_labels.unsqueeze(1)], dim=1)
             return F.cross_entropy(preds.view(-1, preds.size(-1)), labels.view(-1).long())
 
     def training_step(self, batch, batch_idx):
@@ -203,7 +202,7 @@ class Wikitext103Model(CausalTransformer):
   
 # SECTION: Training parameters
 # TODO: make these CLI arguments instead of constants 
-CHECKPOINT_BASE = "./experiments/12_layers_12_heads"
+CHECKPOINT_BASE = "./experiments/12_layers/192_heads/"
 EXPERIMENT = "base"
 CHECKPOINT_DIR = CHECKPOINT_BASE + '/' + EXPERIMENT
 
@@ -234,9 +233,9 @@ if __name__ == "__main__":
     val_dataset = FlattenedWikitext103Dataset(VALID_PATH, tokenizer.pad_id(), len(tokenizer), stride=256, window_length=512)
     #test_dataset = Wikitext103Dataset(TEST_PATH, tokenizer.pad_id(), len(tokenizer))
 
-    BATCH_SIZE = 64  # NOTE: in '16-mixed', we can use 80
-    train_loader = data.DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, drop_last=True, num_workers=3, pin_memory=True)
-    val_loader = data.DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, drop_last=False, num_workers=3)
+    BATCH_SIZE = 2  # NOTE: in '16-mixed', we can use 80
+    train_loader = data.DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, drop_last=True, num_workers=1)
+    val_loader = data.DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, drop_last=False, num_workers=1)
     #test_loader = data.DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, drop_last=False, num_workers=3)
 
     # Set up for training. Seed random seeds and initialize Trainer. 
@@ -267,8 +266,8 @@ if __name__ == "__main__":
             # LearningRateMonitor(logging_interval='step')
         ],
         accelerator="gpu",
-        devices=3,                 # TODO: Change this back to 3 (David was running an experiment on GPU0)
-        strategy="ddp",
+        devices=1,                 # TODO: Change this back to 3 after debugging OOM during F.softmax with 192 heads
+        strategy="ddp",            
         precision="16-mixed",      # TODO: Use 32-true?
         max_epochs=25,
         gradient_clip_val=1.0,     # TODO: change this back to a low value like 1.0 or 0.1
@@ -289,7 +288,7 @@ if __name__ == "__main__":
             attention_norm=None,                                                  # Use None for dot-product attention, 1 for Manhattan, or 2 for Euclidean
             learn_temperatures=False,
             positional_temperatures=False,
-            num_heads=12,
+            num_heads=192,
             num_layers=12,
             dropout=0.1,
             attn_dropout=0.1,
