@@ -85,7 +85,7 @@ class AttentionMechanism(nn.Module):
         # Get attention logits and add attention mask
         attn_logits = self.get_logits(q, k)
         if mask is not None:
-            attn_logits = attn_logits.masked_fill(mask == 0, -65504.0) # smallest half-precision number
+            attn_logits = attn_logits.masked_fill(mask, -65504.0) # smallest half-precision number
 
         # Retrieve attention weights and values
         attention = self.softmax_fn(attn_logits, dim=-1)
@@ -139,7 +139,7 @@ class DotProductAttention(AttentionMechanism):
         '''
         d_k = q.size(-1)
         attn_logits = torch.matmul(q, k.mT)  # .mT returns a view equivalent to k.transpose(-2, -1)
-        attn_logits = attn_logits / math.sqrt(d_k)
+        attn_logits /= math.sqrt(d_k)
         return attn_logits
 #!SECTION
 
