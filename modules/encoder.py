@@ -152,11 +152,14 @@ class TransformerEncoder(nn.Module):
             **block_args: Arguments to pass to each EncoderBlock
         """
         super().__init__()
+        self.num_heads = block_args['num_heads']
         self.layers = nn.ModuleList(
             [EncoderBlock(**block_args) for _ in range(num_layers)]
         )
 
     def forward(self, x, mask=None):
+        if mask is not None: # add head dimension to mask at once instead of appending it within each layer
+            mask = mask.unsqueeze(1).repeat(1, self.num_heads, 1, 1)
         for layer in self.layers:
             x = layer(x, mask=mask)
         return x
