@@ -36,12 +36,12 @@ class OpenbookQADataset(data.Dataset):
         self.lengths = []
         for i, example in enumerate(self.data):
             text = 'Fact: %s Stem: %s A: %s B: %s C: %s D: %s Answer: %s' % (example['fact'],
-                                                                                 example['stem'],
-                                                                                 example['A'],
-                                                                                 example['B'],
-                                                                                 example['C'],
-                                                                                 example['D'],
-                                                                                 example['Answer'])
+                                                                             example['stem'],
+                                                                             example['A'],
+                                                                             example['B'],
+                                                                             example['C'],
+                                                                             example['D'],
+                                                                             example['Answer'])
             tokens = tokenizer.encode(text)
             self.data[i] = tokens
             self.lengths.append(len(tokens))
@@ -68,7 +68,6 @@ class OpenbookQADataset(data.Dataset):
         answer = self.data[idx][-1]
 
         # create mask to ignore padded positions of the sequence (questions are left-padded)
-        # NOTE: these are being ignored right now! check transformer.py!
         padding_mask = torch.zeros(self.context_length)
         padding_mask[-self.lengths[idx]:] = 1
         return tokens, answer, padding_mask
@@ -171,7 +170,7 @@ def get_model(opt):
   
 # SECTION: Paths and constants used for default arguments below
 base = Path(__file__).parent
-EXPERIMENT_DIR = base / 'experiments/12_layers_12_heads/base'
+EXPERIMENT_DIR = base / 'experiments/embed_dim_64/n_heads_8/base'
 TRAIN_PATH = base / 'floyd-finetune/data/obqa.train.txt'
 VAL_PATH = base / 'floyd-finetune/data/obqa.valid.txt'
 TOKENIZER_PATH = "./unigram-tokenizer/tokenizer.model"
