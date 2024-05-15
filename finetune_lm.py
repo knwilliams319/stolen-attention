@@ -68,8 +68,9 @@ class OpenbookQADataset(data.Dataset):
         answer = self.data[idx][-1]
 
         # create mask to ignore padded positions of the sequence (questions are left-padded)
-        padding_mask = torch.zeros(self.context_length)
-        padding_mask[-self.lengths[idx]:] = 1
+        # convention: positions to ignore will be True
+        padding_mask = torch.ones(self.context_length).bool()
+        padding_mask[-self.lengths[idx]:] = False
         return tokens, answer, padding_mask
 # !SECTION
 
@@ -94,7 +95,7 @@ class OpenbookQAModel(CausalTransformer):
         return optimizer
     
     def _calculate_loss(self, batch):
-        data, labels, mask = batch  # TODO: apply the padding mask for each question?
+        data, labels, mask = batch
         data = data
         preds = self(data, pad_mask=mask)[:, -1] # only take last hidden state
         labels = labels.long()

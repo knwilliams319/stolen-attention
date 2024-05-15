@@ -65,7 +65,7 @@ class CausalTransformer(L.LightningModule):
         assert self.hparams.num_steps > 0
 
         # Causal attention mask which ignores tokens beyond the current position
-        causal_mask = torch.tril(torch.ones(self.hparams.max_context_len, self.hparams.max_context_len)).bool()
+        causal_mask = torch.triu(torch.ones(self.hparams.max_context_len, self.hparams.max_context_len), diagonal=1).bool()
         self.register_buffer("causal_mask", causal_mask, persistent=False)
 
         # Input projection Layer
@@ -134,9 +134,9 @@ class CausalTransformer(L.LightningModule):
         n_batches, seq_len = x.size()
         mask = self.causal_mask[:seq_len, :seq_len]       # grab causal mask for sequences of this size
         mask = mask.unsqueeze(0).repeat(n_batches, 1, 1)  # add batch dimension and copy causal mask along it
-        if pad_mask is not None:                          # if supplied, 'pad_mask' will contain 0s at pad positions to ignore
+        if pad_mask is not None:                          # if supplied, 'pad_mask' will contain Trues at pad positions to ignore
             pad_mask = pad_mask.unsqueeze(1).repeat(1, seq_len, 1)
-            mask = mask.masked_fill(pad_mask, False)
+            mask = mask.masked_fill(pad_mask, True)  # add these extra positions to our mask
 
         # Project inputs, scale embeddings, apply positional encoding, and apply dropout
         x = self.input_proj(x)
@@ -159,9 +159,9 @@ class CausalTransformer(L.LightningModule):
         n_batches, seq_len = x.size()
         mask = self.causal_mask[:seq_len, :seq_len]       # grab causal mask for sequences of this size
         mask = mask.unsqueeze(0).repeat(n_batches, 1, 1)  # add batch dimension and copy causal mask along it
-        if pad_mask is not None:                          # if supplied, 'pad_mask' will contain 0s at pad positions to ignore
+        if pad_mask is not None:                          # if supplied, 'pad_mask' will contain Trues at pad positions to ignore
             pad_mask = pad_mask.unsqueeze(1).repeat(1, seq_len, 1)
-            mask = mask.masked_fill(pad_mask == 0, 0)
+            mask = mask.masked_fill(pad_mask, True)  # add these extra positions to our mask
 
         # Project inputs, scale embeddings, apply positional encoding, and apply dropout
         x = self.input_proj(x)
