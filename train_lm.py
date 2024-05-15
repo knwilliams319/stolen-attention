@@ -10,7 +10,7 @@ from lightning.pytorch.callbacks import ModelCheckpoint, ModelSummary #, Learnin
 # from lightning.pytorch.profilers import AdvancedProfiler
 from lightning.pytorch.loggers import CSVLogger
 from sentencepiece import SentencePieceProcessor
-from lightning.pytorch.strategies import FSDPStrategy
+from lightning.pytorch.strategies import DDPStrategy
 
 
 import torch.optim as optim
@@ -202,7 +202,7 @@ class Wikitext103Model(CausalTransformer):
   
 # SECTION: Training parameters
 # TODO: make these CLI arguments instead of constants 
-CHECKPOINT_BASE = "./experiments/12_layers/192_heads/"
+CHECKPOINT_BASE = "./experiments/embed_dim_512/128_heads/"
 EXPERIMENT = "base"
 CHECKPOINT_DIR = CHECKPOINT_BASE + '/' + EXPERIMENT
 
@@ -233,9 +233,9 @@ if __name__ == "__main__":
     val_dataset = FlattenedWikitext103Dataset(VALID_PATH, tokenizer.pad_id(), len(tokenizer), stride=256, window_length=512)
     #test_dataset = Wikitext103Dataset(TEST_PATH, tokenizer.pad_id(), len(tokenizer))
 
-    BATCH_SIZE = 64  # NOTE: in '16-mixed', we can use 80
-    train_loader = data.DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, drop_last=True, num_workers=1)
-    val_loader = data.DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, drop_last=False, num_workers=1)
+    BATCH_SIZE = 13  # NOTE: This is the highest we can go with model_dim=512 and d_k=4
+    train_loader = data.DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, drop_last=True, num_workers=3)
+    val_loader = data.DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, drop_last=False, num_workers=3)
     #test_loader = data.DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, drop_last=False, num_workers=3)
 
     # Set up for training. Seed random seeds and initialize Trainer. 
@@ -266,16 +266,16 @@ if __name__ == "__main__":
             # LearningRateMonitor(logging_interval='step')
         ],
         accelerator="gpu",
-        devices=1,                 # TODO: Change this back to 3 after debugging OOM during F.softmax with 192 heads
-        strategy="ddp",            
-        precision="16-mixed",      # TODO: Use 32-true?
-        max_epochs=25,
-        gradient_clip_val=1.0,     # TODO: change this back to a low value like 1.0 or 0.1
-        benchmark=False,           # this can't be used when deterministic=True
-        profiler=None,             # AdvancedProfiler(dirpath='./', filename='profile.log'),
-        limit_train_batches=None,  # TODO: change this back to None
-        limit_val_batches=None,    # TODO: change this back to None
-        log_every_n_steps=50       # TODO: change this back to 50
+        devices=3,
+        strategy=DDPStrategy(static_graph=True),
+        accumulate_grad_batches=1,
+        precision="16-mixed",
+        max_steps=100000,
+        gradient_clip_val=1.0,
+        profiler=None,
+        limit_train_batches=None,
+        limit_val_batches=None,
+        log_every_n_steps=100
     )
     trainer.logger._default_hp_metric = None  # Optional logging argument that we don't need
 
@@ -284,20 +284,20 @@ if __name__ == "__main__":
         model = Wikitext103Model(
             num_classes=len(tokenizer),
             max_context_len=512,
-            model_dim=768,
-            attention_norm=None,                                                  # Use None for dot-product attention, 1 for Manhattan, or 2 for Euclidean
+            model_dim=512,
+            attention_norm=None,           # Use None for dot-product attention, 1 for Manhattan, or 2 for Euclidean
             learn_temperatures=False,
             positional_temperatures=False,
-            num_heads=192,
+            num_heads=128,
             num_layers=12,
             dropout=0.1,
             attn_dropout=0.1,
             activation_dropout=0.1,
-            ffn_dim=3072,
+            ffn_dim=2048,
             use_pos_encoding=True,
-            lr=1e-4,                                                              # used for AdamW/Lion initialization
-            num_steps=trainer.max_epochs*len(train_loader)/trainer.num_devices,   # used for REX Scheduler
-            temperature_lr_scale=0.0                                              # sets lr for temperature params to scale*lr
+            lr=1e-4,                       # used for AdamW/Lion initialization
+            num_steps=trainer.max_steps,   # used for REX Scheduler
+            temperature_lr_scale=0.0       # sets lr for temperature params to scale*lr
         )
         trainer.fit(model, train_loader, val_loader)
     else:

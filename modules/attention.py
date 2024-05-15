@@ -1,9 +1,11 @@
 # SECTION: Necessary imports
+import math
+import scipy.spatial as sp
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import math
-import scipy.spatial as sp
+from torch.utils.checkpoint import checkpoint
 #!SECTION
 
 # SECTION: Base Attention Class
@@ -116,6 +118,11 @@ class AttentionMechanism(nn.Module):
             #       that columns (positions) of the attention logit matrices `x` receive the same scaling factor. Otherwise, `temperatures` 
             #       has shape (1,) and is applied elementwise. 
             x *= temperatures
+
+        # exp_x = torch.exp(x)
+        # sum_exp_x = torch.sum(exp_x, dim=dim, keepdim=True)
+        # softmax_x = exp_x / sum_exp_x
+        # return softmax_x
         return F.softmax(x, dim=dim)
 #!SECTION
     
