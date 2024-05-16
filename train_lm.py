@@ -6,16 +6,13 @@ import torch.nn.functional as F
 import torch.utils.data as data
 import lightning as L
 # from lightning.pytorch.tuner.tuning import Tuner
-from lightning.pytorch.callbacks import ModelCheckpoint, ModelSummary #, LearningRateMonitor
+from lightning.pytorch.callbacks import ModelCheckpoint, ModelSummary, LearningRateMonitor
 # from lightning.pytorch.profilers import AdvancedProfiler
 from lightning.pytorch.loggers import CSVLogger
 from sentencepiece import SentencePieceProcessor
 from lightning.pytorch.strategies import DDPStrategy
 
-
 import torch.optim as optim
-from functools import partial
-from torch.distributed.fsdp.wrap import size_based_auto_wrap_policy
 from modules import CausalTransformer, REXScheduler
 #!SECTION
 
@@ -79,7 +76,7 @@ class FlattenedWikitext103Dataset(data.Dataset):
     def __getitem__(self, idx):
         strided_idx = idx * self.stride
         tokens = self.data[strided_idx:strided_idx+self.window_length]
-        last_label = self.data[strided_idx+self.window_length+1]
+        last_label = self.data[strided_idx+self.window_length]
         return tokens, last_label # NOTE: due to token packing, pretraining batches will never have padding and we don't need to return a mask
         # labels = self.data[strided_idx+1:strided_idx+self.window_length+1]
         # return tokens, labels, padding_mask
@@ -202,7 +199,7 @@ class Wikitext103Model(CausalTransformer):
   
 # SECTION: Training parameters
 # TODO: make these CLI arguments instead of constants 
-CHECKPOINT_BASE = "./experiments/embed_dim_512/128_heads/"
+CHECKPOINT_BASE = "./experiments/embed_dim_512/8_heads/"
 EXPERIMENT = "base"
 CHECKPOINT_DIR = CHECKPOINT_BASE + '/' + EXPERIMENT
 
@@ -252,18 +249,19 @@ if __name__ == "__main__":
         callbacks=[
             ModelSummary(),
             ModelCheckpoint(
-                save_weights_only=True, 
+                save_weights_only=True,
                 mode="min", 
                 monitor="val_loss",
-                dirpath=CHECKPOINT_DIR
+                dirpath=CHECKPOINT_DIR,
+                filename='best-weights-{epoch:02d}'
             ),
             ModelCheckpoint(
                 save_weights_only=False,
-                every_n_train_steps=len(train_loader),
+                every_n_epochs=1,
                 dirpath=CHECKPOINT_DIR,
-                filename='last-{epoch:02d}-{step:02d}'
+                filename='backup-state-{epoch:02d}'
             ),
-            # LearningRateMonitor(logging_interval='step')
+            LearningRateMonitor(logging_interval='step')
         ],
         accelerator="gpu",
         devices=3,
@@ -288,7 +286,7 @@ if __name__ == "__main__":
             attention_norm=None,           # Use None for dot-product attention, 1 for Manhattan, or 2 for Euclidean
             learn_temperatures=False,
             positional_temperatures=False,
-            num_heads=128,
+            num_heads=8,
             num_layers=12,
             dropout=0.1,
             attn_dropout=0.1,

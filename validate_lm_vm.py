@@ -38,14 +38,14 @@ class Wikitext103Dataset(data.Dataset):
 
     def __getitem__(self, idx):
         tokens = self.data[idx]
-        padding_mask = torch.zeros(self.context_length)
-        labels = torch.cat([
-            tokens[1:],
-            torch.tensor([self.data[idx+1][0]], dtype=tokens.dtype)
-        ])
+        last_label = self.data[idx+1][0]
+        return tokens, last_label # NOTE: due to token packing, pretraining batches will never have padding and we don't need to return a mask
+        # labels = torch.cat([
+        #     tokens[1:],
+        #     torch.tensor([self.data[idx+1][0]], dtype=tokens.dtype)
+        # ])
+        # return tokens, labels, padding_mask
 
-        return tokens, labels, padding_mask
-    
 class FlattenedWikitext103Dataset(data.Dataset):
     def __init__(self, tokens_path: str, pad_id: int, vocab_size: int, stride: int=1, window_length=None):
         super().__init__()
@@ -79,13 +79,13 @@ class FlattenedWikitext103Dataset(data.Dataset):
     def __getitem__(self, idx):
         strided_idx = idx * self.stride
         tokens = self.data[strided_idx:strided_idx+self.window_length]
-        padding_mask = torch.zeros(self.window_length)
-        labels = self.data[strided_idx+1:strided_idx+self.window_length+1]
-        return tokens, labels, padding_mask, strided_idx
+        last_label = self.data[strided_idx+self.window_length]
+        return tokens, last_label # NOTE: due to token packing, pretraining batches will never have padding and we don't need to return a mask
+        # labels = self.data[strided_idx+1:strided_idx+self.window_length+1]
+        # return tokens, labels, padding_mask
 # !SECTION
 
 # SECTION: Model definitions
-global sliding_mode # if True (default False), only the predictions on the last token of the batch will influence loss
 
 class Wikitext103Model(CausalTransformer):
     def __init__(self, **model_kwargs):
@@ -127,140 +127,153 @@ class Wikitext103Model(CausalTransformer):
         # self.avg_norm_out_top5 = {}
         # self.n_inside_top5 = {}
 
-    def _calculate_loss(self, batch):
-        data, labels, mask, batch_idx = batch
+    def _calculate_loss(self, batch, sliding=False):
+        data, last_labels = batch
         data = data.int()
-        preds = self.forward(data, pad_mask=mask) # shape = [bsz, context_len, vocab_size]
-
-        if not sliding_mode:
-            # Get predictions over all tokens in all batches
-            raise ValueError('sliding_mode is set to False!')
-            # preds = preds.view(-1, preds.size(-1))
-            # labels = labels.view(-1).long()
-            # loss = F.cross_entropy(preds, labels)  
-            # return loss
-        else:
-            # Grab predictions on the last element of the context for all batches
-            # NOTE: Using -1 will get predictions on the 513th element given the previous 512, which is what we 
-            #       generally want to measure with sliding window inference.
+        preds = self(data) # shape = [bsz, context_len, vocab_size]
+        if sliding:
             preds = preds[:, -1]
-            labels = labels[:, -1].long()
+            last_labels = last_labels.long()
+            return F.cross_entropy(preds, last_labels)
+        else:
+            labels = torch.cat([data[:, 1:], last_labels.unsqueeze(1)], dim=1)
+            return F.cross_entropy(preds.view(-1, preds.size(-1)), labels.view(-1).long())
 
-            # Track statistics (deprecated)
-            # loss = F.cross_entropy(preds, labels, reduction='none')
-            # labels_cpu = labels.cpu().numpy()
-            # loss_cpu = loss.detach().cpu()
-            # for batch_idx in range(loss_cpu.size(0)):
-            #     token_id = labels_cpu[batch_idx]
-            #     self.losses[token_id].append(loss_cpu[batch_idx].item())
-            # return torch.mean(loss)  # return mean so that logging doesn't error
+    # TODO: I want to use this script to test my flow in train_lm.py
+    # def _calculate_loss(self, batch):
+    #     data, labels, mask, batch_idx = batch
+    #     data = data.int()
+    #     preds = self.forward(data, pad_mask=mask) # shape = [bsz, context_len, vocab_size]
 
-            # Capture statistics that are layer-agnostic
-            # token_ids = data[0].cpu().numpy()
-            #self.batch_no.append(batch_idx.item())
-            # self.all_token_ids.append(token_ids)
-            # self.n_tokens.append(len(token_ids))
+    #     if not sliding_mode:
+    #         # Get predictions over all tokens in all batches
+    #         raise ValueError('sliding_mode is set to False!')
+    #         # preds = preds.view(-1, preds.size(-1))
+    #         # labels = labels.view(-1).long()
+    #         # loss = F.cross_entropy(preds, labels)  
+    #         # return loss
+    #     else:
+    #         # Grab predictions on the last element of the context for all batches
+    #         # NOTE: Using -1 will get predictions on the 513th element given the previous 512, which is what we 
+    #         #       generally want to measure with sliding window inference.
+    #         preds = preds[:, -1]
+    #         labels = labels[:, -1].long()
 
-            # for l, layer in enumerate(self.transformer.layers):
-            #     # self.all_attn_weights.append(layer.self_attn.attn_weights.numpy())
+    #         # Track statistics (deprecated)
+    #         # loss = F.cross_entropy(preds, labels, reduction='none')
+    #         # labels_cpu = labels.cpu().numpy()
+    #         # loss_cpu = loss.detach().cpu()
+    #         # for batch_idx in range(loss_cpu.size(0)):
+    #         #     token_id = labels_cpu[batch_idx]
+    #         #     self.losses[token_id].append(loss_cpu[batch_idx].item())
+    #         # return torch.mean(loss)  # return mean so that logging doesn't error
+
+    #         # Capture statistics that are layer-agnostic
+    #         # token_ids = data[0].cpu().numpy()
+    #         #self.batch_no.append(batch_idx.item())
+    #         # self.all_token_ids.append(token_ids)
+    #         # self.n_tokens.append(len(token_ids))
+
+    #         # for l, layer in enumerate(self.transformer.layers):
+    #         #     # self.all_attn_weights.append(layer.self_attn.attn_weights.numpy())
                 
-            #     for h in range(self.hparams.num_heads):
-            #         # vertices = sorted(layer.self_attn.k_hull[h].vertices)
-            #         k_norms = torch.norm(layer.self_attn.k_matrix[h], dim=-1).numpy()
-            #         weights = layer.self_attn.attn_weights[h].numpy()
-            #         query_norm = torch.norm(layer.self_attn.query_point[h], dim=-1).numpy()
-            #         # k_hull = layer.self_attn.k_hull[h]
+    #         #     for h in range(self.hparams.num_heads):
+    #         #         # vertices = sorted(layer.self_attn.k_hull[h].vertices)
+    #         #         k_norms = torch.norm(layer.self_attn.k_matrix[h], dim=-1).numpy()
+    #         #         weights = layer.self_attn.attn_weights[h].numpy()
+    #         #         query_norm = torch.norm(layer.self_attn.query_point[h], dim=-1).numpy()
+    #         #         # k_hull = layer.self_attn.k_hull[h]
 
-            #         # Append statistics to internal state
-            #         self.all_query_norms[h].append(query_norm)
-            #         self.all_attn_norms[h].append(k_norms)
-            #         self.all_attn_weights[h].append(weights)
+    #         #         # Append statistics to internal state
+    #         #         self.all_query_norms[h].append(query_norm)
+    #         #         self.all_attn_norms[h].append(k_norms)
+    #         #         self.all_attn_weights[h].append(weights)
 
-                    # # Initialize list of statistics for this head
-                    # if h not in self.n_vertices:
-                    #     self.n_vertices[h] = []
-                    #     self.n_interior[h] = []
-                    #     self.query_norm[h] = []
-                    #     self.query_inside[h] = []
-                    #     self.max_weight_in[h] = []
-                    #     self.max_norm_in[h] = []
-                    #     self.max_weight_out[h] = []
-                    #     self.max_norm_out[h] = []
-                    #     self.max_inside[h] = []
-                    #     self.avg_weight_all[h] = []
-                    #     self.avg_norm_all[h] = []
-                    #     self.avg_weight_in[h] = []
-                    #     self.avg_norm_in[h] = []
-                    #     self.avg_weight_out[h] = []
-                    #     self.avg_norm_out[h] = []
-                    #     self.avg_weight_all_top5[h] = []
-                    #     self.avg_norm_all_top5[h] = []
-                    #     self.avg_weight_in_top5[h] = []
-                    #     self.avg_norm_in_top5[h] = []
-                    #     self.avg_weight_out_top5[h] = []
-                    #     self.avg_norm_out_top5[h] = []
-                    #     self.n_inside_top5[h] = []
+    #                 # # Initialize list of statistics for this head
+    #                 # if h not in self.n_vertices:
+    #                 #     self.n_vertices[h] = []
+    #                 #     self.n_interior[h] = []
+    #                 #     self.query_norm[h] = []
+    #                 #     self.query_inside[h] = []
+    #                 #     self.max_weight_in[h] = []
+    #                 #     self.max_norm_in[h] = []
+    #                 #     self.max_weight_out[h] = []
+    #                 #     self.max_norm_out[h] = []
+    #                 #     self.max_inside[h] = []
+    #                 #     self.avg_weight_all[h] = []
+    #                 #     self.avg_norm_all[h] = []
+    #                 #     self.avg_weight_in[h] = []
+    #                 #     self.avg_norm_in[h] = []
+    #                 #     self.avg_weight_out[h] = []
+    #                 #     self.avg_norm_out[h] = []
+    #                 #     self.avg_weight_all_top5[h] = []
+    #                 #     self.avg_norm_all_top5[h] = []
+    #                 #     self.avg_weight_in_top5[h] = []
+    #                 #     self.avg_norm_in_top5[h] = []
+    #                 #     self.avg_weight_out_top5[h] = []
+    #                 #     self.avg_norm_out_top5[h] = []
+    #                 #     self.n_inside_top5[h] = []
 
-                    # # Capture statistics for this head
-                    # self.n_vertices[h].append(len(vertices))
-                    # self.n_interior[h].append(len(token_ids) - len(vertices))
+    #                 # # Capture statistics for this head
+    #                 # self.n_vertices[h].append(len(vertices))
+    #                 # self.n_interior[h].append(len(token_ids) - len(vertices))
 
-                    # vertex_weights = weights[vertices]
-                    # vertex_norms = k_norms[vertices]
-                    # interior_weights = [weight for i, weight in enumerate(weights) if i not in vertices]
-                    # interior_norms = [norm for i, norm in enumerate(k_norms) if i not in vertices]
+    #                 # vertex_weights = weights[vertices]
+    #                 # vertex_norms = k_norms[vertices]
+    #                 # interior_weights = [weight for i, weight in enumerate(weights) if i not in vertices]
+    #                 # interior_norms = [norm for i, norm in enumerate(k_norms) if i not in vertices]
 
-                    # self.avg_weight_all[h].append(torch.mean(weights).item())
-                    # self.avg_norm_all[h].append(torch.mean(k_norms).item())
-                    # indexed_weights = list(enumerate(weights))
-                    # sorted_weights = sorted(indexed_weights, key=lambda x: x[1], reverse=True)
-                    # self.avg_weight_all_top5[h].append(np.mean([weight for _, weight in sorted_weights[0:5]]))
-                    # self.avg_norm_all_top5[h].append(np.mean([k_norms[idx] for idx, _ in sorted_weights[0:5]]))
-                    # top_inside = [not idx in vertices for idx, _ in sorted_weights[0:5]]
-                    # self.n_inside_top5[h].append(sum(top_inside))
+    #                 # self.avg_weight_all[h].append(torch.mean(weights).item())
+    #                 # self.avg_norm_all[h].append(torch.mean(k_norms).item())
+    #                 # indexed_weights = list(enumerate(weights))
+    #                 # sorted_weights = sorted(indexed_weights, key=lambda x: x[1], reverse=True)
+    #                 # self.avg_weight_all_top5[h].append(np.mean([weight for _, weight in sorted_weights[0:5]]))
+    #                 # self.avg_norm_all_top5[h].append(np.mean([k_norms[idx] for idx, _ in sorted_weights[0:5]]))
+    #                 # top_inside = [not idx in vertices for idx, _ in sorted_weights[0:5]]
+    #                 # self.n_inside_top5[h].append(sum(top_inside))
 
-                    # self.avg_weight_out[h].append(torch.mean(vertex_weights).item())
-                    # self.avg_norm_out[h].append(torch.mean(vertex_norms).item())
-                    # indexed_weights_out = list(enumerate(vertex_weights))
-                    # sorted_weights_out = sorted(indexed_weights_out, key=lambda x: x[1], reverse=True)
-                    # self.avg_weight_out_top5[h].append(np.mean([weight for _, weight in sorted_weights_out[0:5]]))
-                    # self.avg_norm_out_top5[h].append(np.mean([vertex_norms[idx] for idx, _ in sorted_weights_out[0:5]]))
-                    # self.max_weight_out[h].append(sorted_weights_out[0][1].item())
-                    # self.max_norm_out[h].append(vertex_norms[sorted_weights_out[0][0]].item())
+    #                 # self.avg_weight_out[h].append(torch.mean(vertex_weights).item())
+    #                 # self.avg_norm_out[h].append(torch.mean(vertex_norms).item())
+    #                 # indexed_weights_out = list(enumerate(vertex_weights))
+    #                 # sorted_weights_out = sorted(indexed_weights_out, key=lambda x: x[1], reverse=True)
+    #                 # self.avg_weight_out_top5[h].append(np.mean([weight for _, weight in sorted_weights_out[0:5]]))
+    #                 # self.avg_norm_out_top5[h].append(np.mean([vertex_norms[idx] for idx, _ in sorted_weights_out[0:5]]))
+    #                 # self.max_weight_out[h].append(sorted_weights_out[0][1].item())
+    #                 # self.max_norm_out[h].append(vertex_norms[sorted_weights_out[0][0]].item())
 
-                    # # sometimes, all keys are vertices of the convex hull
-                    # if len(interior_weights) > 0:
-                    #     self.avg_weight_in[h].append(np.mean(interior_weights))
-                    #     self.avg_norm_in[h].append(np.mean(interior_norms))
-                    #     indexed_weights_in = list(enumerate(interior_weights))
-                    #     sorted_weights_in = sorted(indexed_weights_in, key=lambda x: x[1], reverse=True)
-                    #     self.avg_weight_in_top5[h].append(np.mean([weight for _, weight in sorted_weights_in[0:5]]))
-                    #     self.avg_norm_in_top5[h].append(np.mean([interior_norms[idx] for idx, _ in sorted_weights_in[0:5]]))
-                    #     self.max_weight_in[h].append(sorted_weights_in[0][1].item())
-                    #     self.max_norm_in[h].append(interior_norms[sorted_weights_in[0][0]].item())
-                    #     self.max_inside[h].append(sorted_weights_out[0][1].item() < sorted_weights_in[0][1].item())
-                    # else:
-                    #     self.avg_weight_in[h].append(pd.NA)
-                    #     self.avg_norm_in[h].append(pd.NA)
-                    #     self.avg_weight_in_top5[h].append(pd.NA)
-                    #     self.avg_norm_in_top5[h].append(pd.NA)
-                    #     self.max_weight_in[h].append(pd.NA)
-                    #     self.max_norm_in[h].append(pd.NA)
-                    #     self.max_inside[h].append(False)
+    #                 # # sometimes, all keys are vertices of the convex hull
+    #                 # if len(interior_weights) > 0:
+    #                 #     self.avg_weight_in[h].append(np.mean(interior_weights))
+    #                 #     self.avg_norm_in[h].append(np.mean(interior_norms))
+    #                 #     indexed_weights_in = list(enumerate(interior_weights))
+    #                 #     sorted_weights_in = sorted(indexed_weights_in, key=lambda x: x[1], reverse=True)
+    #                 #     self.avg_weight_in_top5[h].append(np.mean([weight for _, weight in sorted_weights_in[0:5]]))
+    #                 #     self.avg_norm_in_top5[h].append(np.mean([interior_norms[idx] for idx, _ in sorted_weights_in[0:5]]))
+    #                 #     self.max_weight_in[h].append(sorted_weights_in[0][1].item())
+    #                 #     self.max_norm_in[h].append(interior_norms[sorted_weights_in[0][0]].item())
+    #                 #     self.max_inside[h].append(sorted_weights_out[0][1].item() < sorted_weights_in[0][1].item())
+    #                 # else:
+    #                 #     self.avg_weight_in[h].append(pd.NA)
+    #                 #     self.avg_norm_in[h].append(pd.NA)
+    #                 #     self.avg_weight_in_top5[h].append(pd.NA)
+    #                 #     self.avg_norm_in_top5[h].append(pd.NA)
+    #                 #     self.max_weight_in[h].append(pd.NA)
+    #                 #     self.max_norm_in[h].append(pd.NA)
+    #                 #     self.max_inside[h].append(False)
 
-                    # # This must be last, as doing add_points may change the vertex list
-                    # try:
-                    #     k_hull.add_points(query.unsqueeze(0))
-                    #     self.query_inside[h].append(not len(token_ids) in k_hull.vertices)
-                    # except sp.QhullError:
-                    #     self.query_inside[h].append(pd.NA)
-                    # self.query_norm[h].append(torch.norm(query).item())
+    #                 # # This must be last, as doing add_points may change the vertex list
+    #                 # try:
+    #                 #     k_hull.add_points(query.unsqueeze(0))
+    #                 #     self.query_inside[h].append(not len(token_ids) in k_hull.vertices)
+    #                 # except sp.QhullError:
+    #                 #     self.query_inside[h].append(pd.NA)
+    #                 # self.query_norm[h].append(torch.norm(query).item())
                     
-            # we're doing nothing special with loss for Q/K stats
-            return F.cross_entropy(preds, labels) 
+    #         # we're doing nothing special with loss for Q/K stats
+    #         return F.cross_entropy(preds, labels) 
 
     def validation_step(self, batch, batch_idx):
-        loss = self._calculate_loss(batch)
+        loss = self._calculate_loss(batch, sliding=True)
         self.log(
             "val_loss",
             loss, 
@@ -271,7 +284,7 @@ class Wikitext103Model(CausalTransformer):
         )
 
     def test_step(self, batch, batch_idx):
-        loss = self._calculate_loss(batch)
+        loss = self._calculate_loss(batch, sliding=True)
         self.log(
             "test_loss", 
             loss, 
@@ -284,8 +297,8 @@ class Wikitext103Model(CausalTransformer):
   
 # SECTION: Training parameters
 # TODO: make these CLI arguments instead of constants 
-CHECKPOINT_BASE = "./experiments/1_layer_8_heads/"
-EXPERIMENT = "oracle"
+CHECKPOINT_BASE = "./experiments/embed_dim_512/8_heads"
+EXPERIMENT = "base"
 CHECKPOINT_DIR = CHECKPOINT_BASE + '/' + EXPERIMENT
 VALID_PATH = "./data/wikitext-103/unigram.wiki.valid.tokens.tokenized.pt"
 TOKENIZER_PATH = "./unigram-tokenizer/tokenizer.model"
@@ -312,18 +325,18 @@ if __name__ == "__main__":
     tokenizer = SentencePieceProcessor(model_file=TOKENIZER_PATH)
 
     # Create dataloaders
-    BATCH_SIZE = 1
+    BATCH_SIZE = 64
     val_dataset = Wikitext103Dataset(VALID_PATH, tokenizer.pad_id(), len(tokenizer))
     val_loader = data.DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, drop_last=False, num_workers=4, persistent_workers=False)
 
     WINDOW_LENGTH = 512
-    STRIDE = 128
+    STRIDE = 256
     val_dataset_flat = FlattenedWikitext103Dataset(VALID_PATH, tokenizer.pad_id(), len(tokenizer), stride=STRIDE, window_length=WINDOW_LENGTH)
     val_loader_flat = data.DataLoader(val_dataset_flat, batch_size=BATCH_SIZE, shuffle=False, drop_last=False, num_workers=3, persistent_workers=True)
 
     # Load pretrained model
     checkpoint_dir = Path(CHECKPOINT_DIR)
-    pretrained_file_path = list(checkpoint_dir.glob('epoch=*.ckpt')) # Should grab the best checkpoint
+    pretrained_file_path = list(checkpoint_dir.glob('best-weights-epoch=*.ckpt')) # Should grab the best checkpoint
     pretrained_file_path, *extras = pretrained_file_path
     if extras:
         raise ValueError('Too many checkpoints were globbed in this directory!')
@@ -343,8 +356,7 @@ if __name__ == "__main__":
     #     pickle.dump(model.k_hull_props,k_hull_file)
 
     print("Testing Sliding Window Inference on Validation Set")
-    sliding_mode = True
-    trainer.test(model, dataloaders=val_loader_flat, verbose=True)
+    trainer.validate(model, dataloaders=val_loader_flat, verbose=True)
 
     # for i in range(8):
     #     weights = np.array(model.all_attn_weights[i])
