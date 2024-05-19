@@ -194,12 +194,12 @@ class Wikitext103Model(CausalTransformer):
             on_step=False,
             on_epoch=True,
             rank_zero_only=False
-        ) 
+        )
 #!SECTION
   
 # SECTION: Training parameters
 # TODO: make these CLI arguments instead of constants 
-CHECKPOINT_BASE = "./experiments/embed_dim_512/8_heads/"
+CHECKPOINT_BASE = "./experiments/embed_dim_512/128_heads/"
 EXPERIMENT = "base"
 CHECKPOINT_DIR = CHECKPOINT_BASE + '/' + EXPERIMENT
 
@@ -286,7 +286,7 @@ if __name__ == "__main__":
             attention_norm=None,           # Use None for dot-product attention, 1 for Manhattan, or 2 for Euclidean
             learn_temperatures=False,
             positional_temperatures=False,
-            num_heads=8,
+            num_heads=128,
             num_layers=12,
             dropout=0.1,
             attn_dropout=0.1,

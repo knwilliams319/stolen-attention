@@ -171,7 +171,7 @@ def get_model(opt):
   
 # SECTION: Paths and constants used for default arguments below
 base = Path(__file__).parent
-EXPERIMENT_DIR = base / 'experiments/embed_dim_64/n_heads_8/base'
+EXPERIMENT_DIR = base / 'experiments/embed_dim_512/128_heads/base'
 TRAIN_PATH = base / 'floyd-finetune/data/obqa.train.txt'
 VAL_PATH = base / 'floyd-finetune/data/obqa.valid.txt'
 TOKENIZER_PATH = "./unigram-tokenizer/tokenizer.model"
@@ -185,7 +185,7 @@ if __name__ == "__main__":
     parser.add_argument('-epochs', type=int, default=5)
     parser.add_argument('-lr', type=float, default=1e-5)
     parser.add_argument('-clip_norm', type=float, default=2.0)
-    parser.add_argument('-batchsize', type=int, default=3)
+    parser.add_argument('-batchsize', type=int, default=4)
     parser.add_argument('-log_every', type=int, default=100)
     parser.add_argument('-train_path', type=Path, default=TRAIN_PATH)
     parser.add_argument('-val_path', type=Path, default=VAL_PATH)
@@ -196,7 +196,7 @@ if __name__ == "__main__":
     opt = parser.parse_args()
 
     # Post-process some of the CLI arguments
-    pretrained_paths = opt.pretrained_dir.glob('epoch=*.ckpt')  # the best pretrained checkpoint will follow this naming pattern
+    pretrained_paths = opt.pretrained_dir.glob('backup-state*.ckpt')  # the best pretrained checkpoint will follow this naming pattern
     opt.pretrained_path, *extras = pretrained_paths
     if extras:
         raise ValueError('The passed-in pretrained_dir argument holds more than one pretrained model checkpoint inside!')
@@ -231,13 +231,14 @@ if __name__ == "__main__":
                 save_weights_only=True, 
                 mode="max", 
                 monitor="val_accuracy",
-                dirpath=opt.save_dir
+                dirpath=opt.save_dir,
+                filename='best-weights-{epoch:02d}'
             ),
             ModelCheckpoint(
                 save_weights_only=False,
-                every_n_train_steps=len(train_loader),     # Save state of model at the end of every epoch
+                every_n_epochs=1,     # Save state of model at the end of every epoch
                 dirpath=opt.save_dir,
-                filename='last-{epoch:02d}-{step:02d}'
+                filename='backup-state-{epoch:02d}'
             ),
             LearningRateMonitor(logging_interval='step')
         ],
