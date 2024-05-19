@@ -3,18 +3,13 @@ import torch
 import torch.nn.functional as F
 import torch.utils.data as data
 import lightning as L
-from lightning.pytorch.tuner.tuning import Tuner
-from lightning.pytorch.callbacks import ModelCheckpoint, ModelSummary, LearningRateMonitor
-from lightning.pytorch.profilers import AdvancedProfiler
 from pathlib import Path
 from sentencepiece import SentencePieceProcessor
-from lightning.pytorch.loggers import CSVLogger
 import pandas as pd
 import numpy as np
 import scipy.spatial as sp
 # import pickle
 # from sklearn.metrics import confusion_matrix
-# from transformers import GPT2TokenizerFast
 
 from modules import CausalTransformer
 #!SECTION
@@ -297,7 +292,7 @@ class Wikitext103Model(CausalTransformer):
   
 # SECTION: Training parameters
 # TODO: make these CLI arguments instead of constants 
-CHECKPOINT_BASE = "./experiments/embed_dim_512/8_heads"
+CHECKPOINT_BASE = "./experiments/embed_dim_512/64_heads"
 EXPERIMENT = "base"
 CHECKPOINT_DIR = CHECKPOINT_BASE + '/' + EXPERIMENT
 VALID_PATH = "./data/wikitext-103/unigram.wiki.valid.tokens.tokenized.pt"
@@ -318,7 +313,7 @@ if __name__ == "__main__":
         precision="16-mixed",     # NOTE: Might need to be 32-true depending on the checkpoint
         benchmark=True,
         logger=False,             # Turns off creation of 'lightning_logs' directory
-        limit_test_batches=None      # Might need to use this for higher dimensional models
+        limit_test_batches=None   # Might need to use this for higher dimensional models
     )
 
     # Initialize tokenizer
@@ -330,13 +325,14 @@ if __name__ == "__main__":
     val_loader = data.DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, drop_last=False, num_workers=4, persistent_workers=False)
 
     WINDOW_LENGTH = 512
-    STRIDE = 256
+    STRIDE = 16
     val_dataset_flat = FlattenedWikitext103Dataset(VALID_PATH, tokenizer.pad_id(), len(tokenizer), stride=STRIDE, window_length=WINDOW_LENGTH)
     val_loader_flat = data.DataLoader(val_dataset_flat, batch_size=BATCH_SIZE, shuffle=False, drop_last=False, num_workers=3, persistent_workers=True)
 
     # Load pretrained model
     checkpoint_dir = Path(CHECKPOINT_DIR)
-    pretrained_file_path = list(checkpoint_dir.glob('best-weights-epoch=*.ckpt')) # Should grab the best checkpoint
+    pretrained_file_path = list(checkpoint_dir.glob('backup-state*.ckpt')) # Should grab the best checkpoint
+    # pretrained_file_path = list(checkpoint_dir.glob('best-weights-epoch=*.ckpt'))
     pretrained_file_path, *extras = pretrained_file_path
     if extras:
         raise ValueError('Too many checkpoints were globbed in this directory!')
