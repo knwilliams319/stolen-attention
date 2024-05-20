@@ -47,11 +47,10 @@ class OpenbookQADataset(data.Dataset):
             self.lengths.append(len(tokens))
         
         # Left-pad the questions to the same length
-        # NOTE: Uncomment this block if using a batch size that is greater than 1
         def pad_to_longest_question(questions, lengths):
             max_length = max(self.lengths)
             for i, question in enumerate(questions):
-                padding = [0] * (max_length - lengths[i])  # NOTE: I can't see where David uses padding... could this be a cause for concern?
+                padding = [0] * (max_length - lengths[i])
                 yield padding + question
         self.data = torch.tensor(list(pad_to_longest_question(self.data, self.lengths)), dtype=torch.int32)
 
@@ -75,7 +74,6 @@ class OpenbookQADataset(data.Dataset):
 # !SECTION
 
 # SECTION: Model Definition
-# TODO: Try to use the FinetuneHead to train a new classification head on top of the model after I get this working
 class OpenbookQAModel(CausalTransformer):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -153,7 +151,7 @@ class OpenbookQAModel(CausalTransformer):
         )
         self.log(
             "val_accuracy",
-            num_correct.float(),  # NOTE: 100% accuracy is 500 (and without the float conversion, I get a warning)
+            num_correct/500,  # NOTE: 100% accuracy is 500 (and without the float conversion, I get a warning)
             on_step=False,
             on_epoch=True,
             reduce_fx="sum"
@@ -171,7 +169,7 @@ def get_model(opt):
   
 # SECTION: Paths and constants used for default arguments below
 base = Path(__file__).parent
-EXPERIMENT_DIR = base / 'experiments/embed_dim_512/128_heads/base'
+EXPERIMENT_DIR = base / 'experiments/embed_dim_512/8_heads/base'
 TRAIN_PATH = base / 'floyd-finetune/data/obqa.train.txt'
 VAL_PATH = base / 'floyd-finetune/data/obqa.valid.txt'
 TOKENIZER_PATH = "./unigram-tokenizer/tokenizer.model"
@@ -181,17 +179,17 @@ TOKENIZER_PATH = "./unigram-tokenizer/tokenizer.model"
 if __name__ == "__main__":
     # Parse CLI Arguments
     parser = argparse.ArgumentParser()
-    parser.add_argument('-no_cuda', action='store_true')
-    parser.add_argument('-epochs', type=int, default=5)
-    parser.add_argument('-lr', type=float, default=1e-5)
-    parser.add_argument('-clip_norm', type=float, default=2.0)
-    parser.add_argument('-batchsize', type=int, default=4)
-    parser.add_argument('-log_every', type=int, default=100)
-    parser.add_argument('-train_path', type=Path, default=TRAIN_PATH)
-    parser.add_argument('-val_path', type=Path, default=VAL_PATH)
-    parser.add_argument('-tokenizer_path', type=str, default=TOKENIZER_PATH)
-    parser.add_argument('-pretrained_dir', type=Path, default=EXPERIMENT_DIR)
-    parser.add_argument('-save_dir', type=str, default='finetune')
+    parser.add_argument('--no-cuda', action='store_true')
+    parser.add_argument('--epochs', type=int, default=5)
+    parser.add_argument('--lr', type=float, default=1e-5)
+    parser.add_argument('--clip_norm', type=float, default=2.0)
+    parser.add_argument('--batchsize', type=int, default=1)
+    parser.add_argument('--log-every', type=int, default=100)
+    parser.add_argument('--train-path', type=Path, default=TRAIN_PATH)
+    parser.add_argument('--val-path', type=Path, default=VAL_PATH)
+    parser.add_argument('--tokenizer-path', type=str, default=TOKENIZER_PATH)
+    parser.add_argument('--pretrained-dir', type=Path, default=EXPERIMENT_DIR)
+    parser.add_argument('--save-dir', type=str, default='finetune')
     # TODO: add arguments to apply different dropout rates, e.g. parser.add_argument('-attn_dropout', type=int, default=0.1)
     opt = parser.parse_args()
 
