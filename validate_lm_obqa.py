@@ -19,7 +19,7 @@ from finetune_lm import OpenbookQADataset, OpenbookQAModel # TODO: may need to e
 # SECTION: Paths and constants used for default arguments below
 base = Path(__file__).parent
 TOKENIZER_PATH = (base / "unigram-tokenizer/tokenizer.model").as_posix()    # NOTE: needs to be a string
-EXPERIMENT_DIR = base / 'experiments/embed_dim_512/128_heads/base/finetune'
+EXPERIMENT_DIR = base / 'experiments/embed_dim_512/32_heads/base/finetune'
 OBQA_VALID_PATH = base / 'floyd-finetune/data/obqa.valid.txt'
 #!SECTION
         
