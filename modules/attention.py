@@ -1,9 +1,10 @@
 # SECTION: Necessary imports
+import math
+import scipy.spatial as sp
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import math
-import scipy.spatial as sp
 #!SECTION
 
 # SECTION: Base Attention Class
@@ -41,10 +42,10 @@ class AttentionMechanism(nn.Module):
                 self.temperatures = nn.Parameter(torch.Tensor(1), requires_grad=True)
 
         # Q/K Hull calculation data structures
-        # self.k_matrix = [None]*num_heads
-        # self.k_hull = [None]*num_heads
-        # self.attn_weights = [None]*num_heads
-        # self.query_point = [None]*num_heads
+        self.k_embed = None
+        self.k_hull = None
+        self.attn_weights = None
+        self.query_points = None
 
     def init_modules(self, sigma_main, sigma_proj):
         nn.init.normal_(self.qkv_proj.weight, mean=0, std=sigma_main)
@@ -55,7 +56,7 @@ class AttentionMechanism(nn.Module):
         if self.learn_temperatures:
             nn.init.uniform_(self.temperatures, 0.95, 1.05) # draw uniformly around 1, which is technically the temperature for F.softmax
 
-    def forward(self, x, mask=None):
+    def forward(self, x, mask=None, save_attn_stats=False):
         batch_size, seq_length, embed_dim = x.size()
         qkv = self.qkv_proj(x)
 
@@ -89,12 +90,14 @@ class AttentionMechanism(nn.Module):
 
         # Retrieve attention weights and values
         attention = self.softmax_fn(attn_logits, dim=-1)
-        # for i in range(self.num_heads):
-        #     self.query_point[i] = q[0][i][-1].cpu()
-        #     self.k_matrix[i] = k[0][i].cpu()
-        #     self.attn_weights[i] = attention[0][i][-1].cpu()  # take full context length weights for all heads
         attention = self.dropout(attention)
         values = torch.matmul(attention, v)
+
+        # Save attention stats if necessary. This should be done after dropout is applied to attention in case the model was trained with dropout.
+        if save_attn_stats:
+            self.query_points = q[:,:,-1]
+            self.k_embed = k
+            self.attn_weights = attention[:,:,-1]
     
         # Reshape for output projection
         values = values.permute(0, 2, 1, 3)  # [Batch, SeqLen, Head, Dims]
@@ -116,6 +119,12 @@ class AttentionMechanism(nn.Module):
             #       that columns (positions) of the attention logit matrices `x` receive the same scaling factor. Otherwise, `temperatures` 
             #       has shape (1,) and is applied elementwise. 
             x *= temperatures
+
+        # NOTE: use below over F.softmax if we're really memory-constrained
+        # exp_x = torch.exp(x)
+        # sum_exp_x = torch.sum(exp_x, dim=dim, keepdim=True)
+        # softmax_x = exp_x / sum_exp_x
+        # return softmax_x
         return F.softmax(x, dim=dim)
 #!SECTION
     

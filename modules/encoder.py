@@ -114,7 +114,7 @@ class EncoderBlock(nn.Module):
         nn.init.constant_(self.down_projection.bias, 0)
         self.self_attn.init_modules(sigma_main, sigma_proj)
 
-    def forward(self, x, mask=None):
+    def forward(self, x, mask=None, save_attn_stats=False):
         # TODO: Implement these once I start noticing convergence?
         # NOTE: These links seem to be parallel work on the same concept. I think the B2T Residual (1) has nicer graphics.
         # LINK (1): Bottom-to-Top Residual Connection: https://arxiv.org/pdf/2206.00330v1.pdf
@@ -124,7 +124,7 @@ class EncoderBlock(nn.Module):
         # Normalize inputs and calculate attention
         residual = x
         x = self.input_norm(x)
-        x = self.self_attn(x, mask=mask)
+        x = self.self_attn(x, mask=mask, save_attn_stats=save_attn_stats)
 
         # Add and norm
         x = self.dropout_1(x)
@@ -157,11 +157,14 @@ class TransformerEncoder(nn.Module):
             [EncoderBlock(**block_args) for _ in range(num_layers)]
         )
 
-    def forward(self, x, mask=None):
+    def forward(self, x, mask=None, save_after_k=-1):
         if mask is not None: # add head dimension to mask at once instead of appending it within each layer
             mask = mask.unsqueeze(1).repeat(1, self.num_heads, 1, 1)
-        for layer in self.layers:
-            x = layer(x, mask=mask)
+        for i, layer in enumerate(self.layers):
+            if save_after_k >= 0 and i >= save_after_k:
+                x = layer(x, mask=mask, save_attn_stats=True)
+            else:
+                x = layer(x, mask=mask) # normal forward
         return x
     
     def init_layers(self, sigma_main, sigma_proj):

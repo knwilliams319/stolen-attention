@@ -47,11 +47,10 @@ class OpenbookQADataset(data.Dataset):
             self.lengths.append(len(tokens))
         
         # Left-pad the questions to the same length
-        # NOTE: Uncomment this block if using a batch size that is greater than 1
         def pad_to_longest_question(questions, lengths):
             max_length = max(self.lengths)
             for i, question in enumerate(questions):
-                padding = [0] * (max_length - lengths[i])  # NOTE: I can't see where David uses padding... could this be a cause for concern?
+                padding = [0] * (max_length - lengths[i])
                 yield padding + question
         self.data = torch.tensor(list(pad_to_longest_question(self.data, self.lengths)), dtype=torch.int32)
 
@@ -68,13 +67,15 @@ class OpenbookQADataset(data.Dataset):
         answer = self.data[idx][-1]
 
         # create mask to ignore padded positions of the sequence (questions are left-padded)
-        padding_mask = torch.zeros(self.context_length)
-        padding_mask[-self.lengths[idx]:] = 1
+        # convention: positions to ignore will be True
+        padding_mask = torch.ones(self.context_length).bool()
+        padding_mask[-self.lengths[idx]:] = False
         return tokens, answer, padding_mask
 # !SECTION
 
 # SECTION: Model Definition
-# TODO: Try to use the FinetuneHead to train a new classification head on top of the model after I get this working
+# TODO: Move this to a more general location. The use of save_after_k doesn't make sense in this file, although it's useful in validate_lm_obqa 
+#       to keep the loss calculation consistent between a fine-tuned model and capturing statistics on held-out data later. 
 class OpenbookQAModel(CausalTransformer):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -93,10 +94,10 @@ class OpenbookQAModel(CausalTransformer):
         # }
         return optimizer
     
-    def _calculate_loss(self, batch):
-        data, labels, mask = batch  # TODO: apply the padding mask for each question?
+    def _calculate_loss(self, batch, save_after_k=-1):
+        data, labels, mask = batch
         data = data
-        preds = self(data, pad_mask=mask)[:, -1] # only take last hidden state
+        preds = self(data, pad_mask=mask, save_after_k=save_after_k)[:, -1] # only take last hidden state
         labels = labels.long()
 
         # Try David's custom-built F.cross_entropy that's only over the answer space despite technically allowing the model to output any token
@@ -152,7 +153,7 @@ class OpenbookQAModel(CausalTransformer):
         )
         self.log(
             "val_accuracy",
-            num_correct.float(),  # NOTE: 100% accuracy is 500 (and without the float conversion, I get a warning)
+            num_correct/500,  # NOTE: 100% accuracy is 500 (and without the float conversion, I get a warning)
             on_step=False,
             on_epoch=True,
             reduce_fx="sum"
@@ -170,7 +171,7 @@ def get_model(opt):
   
 # SECTION: Paths and constants used for default arguments below
 base = Path(__file__).parent
-EXPERIMENT_DIR = base / 'experiments/embed_dim_64/n_heads_8/base'
+EXPERIMENT_DIR = base / 'experiments/embed_dim_512/8_heads/base'
 TRAIN_PATH = base / 'floyd-finetune/data/obqa.train.txt'
 VAL_PATH = base / 'floyd-finetune/data/obqa.valid.txt'
 TOKENIZER_PATH = "./unigram-tokenizer/tokenizer.model"
@@ -180,22 +181,22 @@ TOKENIZER_PATH = "./unigram-tokenizer/tokenizer.model"
 if __name__ == "__main__":
     # Parse CLI Arguments
     parser = argparse.ArgumentParser()
-    parser.add_argument('-no_cuda', action='store_true')
-    parser.add_argument('-epochs', type=int, default=5)
-    parser.add_argument('-lr', type=float, default=1e-5)
-    parser.add_argument('-clip_norm', type=float, default=2.0)
-    parser.add_argument('-batchsize', type=int, default=3)
-    parser.add_argument('-log_every', type=int, default=100)
-    parser.add_argument('-train_path', type=Path, default=TRAIN_PATH)
-    parser.add_argument('-val_path', type=Path, default=VAL_PATH)
-    parser.add_argument('-tokenizer_path', type=str, default=TOKENIZER_PATH)
-    parser.add_argument('-pretrained_dir', type=Path, default=EXPERIMENT_DIR)
-    parser.add_argument('-save_dir', type=str, default='finetune')
+    parser.add_argument('--no-cuda', action='store_true')
+    parser.add_argument('--epochs', type=int, default=5)
+    parser.add_argument('--lr', type=float, default=1e-5)
+    parser.add_argument('--clip_norm', type=float, default=2.0)
+    parser.add_argument('--batchsize', type=int, default=1)
+    parser.add_argument('--log-every', type=int, default=100)
+    parser.add_argument('--train-path', type=Path, default=TRAIN_PATH)
+    parser.add_argument('--val-path', type=Path, default=VAL_PATH)
+    parser.add_argument('--tokenizer-path', type=str, default=TOKENIZER_PATH)
+    parser.add_argument('--pretrained-dir', type=Path, default=EXPERIMENT_DIR)
+    parser.add_argument('--save-dir', type=str, default='finetune')
     # TODO: add arguments to apply different dropout rates, e.g. parser.add_argument('-attn_dropout', type=int, default=0.1)
     opt = parser.parse_args()
 
     # Post-process some of the CLI arguments
-    pretrained_paths = opt.pretrained_dir.glob('epoch=*.ckpt')  # the best pretrained checkpoint will follow this naming pattern
+    pretrained_paths = opt.pretrained_dir.glob('backup-state*.ckpt')  # the best pretrained checkpoint will follow this naming pattern
     opt.pretrained_path, *extras = pretrained_paths
     if extras:
         raise ValueError('The passed-in pretrained_dir argument holds more than one pretrained model checkpoint inside!')
@@ -230,13 +231,14 @@ if __name__ == "__main__":
                 save_weights_only=True, 
                 mode="max", 
                 monitor="val_accuracy",
-                dirpath=opt.save_dir
+                dirpath=opt.save_dir,
+                filename='best-weights-{epoch:02d}'
             ),
             ModelCheckpoint(
                 save_weights_only=False,
-                every_n_train_steps=len(train_loader),     # Save state of model at the end of every epoch
+                every_n_epochs=1,     # Save state of model at the end of every epoch
                 dirpath=opt.save_dir,
-                filename='last-{epoch:02d}-{step:02d}'
+                filename='backup-state-{epoch:02d}'
             ),
             LearningRateMonitor(logging_interval='step')
         ],

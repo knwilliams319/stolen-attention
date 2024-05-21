@@ -165,9 +165,9 @@ class TransformerGPT(L.LightningModule):
     def forward(self, trg, trg_mask=None):
         batch_size, seq_len = trg.shape
         mask = self.causal_mask[:seq_len,:seq_len].unsqueeze(0).repeat(batch_size, 1, 1)
-        if trg_mask is not None:
-            trg_mask = trg_mask.unsqueeze(1).repeat(1, seq_len, 1)
-            mask = mask.masked_fill(trg_mask==0, 0)
+        # if trg_mask is not None:
+        #     trg_mask = trg_mask.unsqueeze(1).repeat(1, seq_len, 1)
+        #     mask = mask.masked_fill(trg_mask==0, 0)
 
         d_output = self.decoder(trg, mask)
         output = self.out(d_output)
