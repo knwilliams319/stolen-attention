@@ -16,6 +16,8 @@ import torch.nn as nn
 from torch.autograd import Variable
 from transformers import GPT2TokenizerFast
 
+from transformer import TransformerGPT
+
 def OutText(text,opt,screen=True):
     if screen:
         print(text)
@@ -43,247 +45,256 @@ def read_indices(filename):
                 seq.append(int(t))
     return(seq)
 
-class Embedder(nn.Module):
-    def __init__(self, vocab_size, d_model):
-        super().__init__()
-        self.d_model = d_model
-        self.embed = nn.Embedding(vocab_size, d_model)
-    def forward(self, x):
-        return self.embed(x.int())
+# class Embedder(nn.Module):
+#     def __init__(self, vocab_size, d_model):
+#         super().__init__()
+#         self.d_model = d_model
+#         self.embed = nn.Embedding(vocab_size, d_model)
+#     def forward(self, x):
+#         return self.embed(x.int())
 
-class PositionalEncoder(nn.Module):
-    def __init__(self, d_model, max_seq_len = 4096, dropout = 0.1):
-        super().__init__()
-        self.d_model = d_model
-        self.dropout = nn.Dropout(dropout)
-        # create constant 'pe' matrix with values dependant on 
-        # pos and i
-        pe = torch.zeros(max_seq_len, d_model)
-        for pos in range(max_seq_len):
-            for i in range(0, d_model, 2):
-                pe[pos, i] = \
-                math.sin(pos / (10000 ** ((2 * i)/d_model)))
-                pe[pos, i + 1] = \
-                math.cos(pos / (10000 ** ((2 * (i + 1))/d_model)))
-        pe = pe.unsqueeze(0)
-        self.register_buffer('pe', pe)
+# class PositionalEncoder(nn.Module):
+#     def __init__(self, d_model, max_seq_len = 4096, dropout = 0.1):
+#         super().__init__()
+#         self.d_model = d_model
+#         self.dropout = nn.Dropout(dropout)
+#         # create constant 'pe' matrix with values dependant on 
+#         # pos and i
+#         pe = torch.zeros(max_seq_len, d_model)
+#         for pos in range(max_seq_len):
+#             for i in range(0, d_model, 2):
+#                 pe[pos, i] = \
+#                 math.sin(pos / (10000 ** ((2 * i)/d_model)))
+#                 pe[pos, i + 1] = \
+#                 math.cos(pos / (10000 ** ((2 * (i + 1))/d_model)))
+#         pe = pe.unsqueeze(0)
+#         self.register_buffer('pe', pe)
     
-    def forward(self, x):
-        # make embeddings relatively larger
-        x = x * math.sqrt(self.d_model)
-        #add constant to embedding
-        seq_len = x.size(1)
-        pe = Variable(self.pe[:,:seq_len], requires_grad=False)
-        if x.is_cuda:
-            pe.cuda()
-        x = x + pe
-        return self.dropout(x)
+#     def forward(self, x):
+#         # make embeddings relatively larger
+#         x = x * math.sqrt(self.d_model)
+#         #add constant to embedding
+#         seq_len = x.size(1)
+#         pe = Variable(self.pe[:,:seq_len], requires_grad=False)
+#         if x.is_cuda:
+#             pe.cuda()
+#         x = x + pe
+#         return self.dropout(x)
     
-class Norm(nn.Module):
-    def __init__(self, d_model, eps = 1e-6):
-        super().__init__()
+# class Norm(nn.Module):
+#     def __init__(self, d_model, eps = 1e-6):
+#         super().__init__()
     
-        self.size = d_model
+#         self.size = d_model
         
-        # create two learnable parameters to calibrate normalisation
-        self.alpha = nn.Parameter(torch.ones(self.size))
-        self.bias = nn.Parameter(torch.zeros(self.size))
+#         # create two learnable parameters to calibrate normalisation
+#         self.alpha = nn.Parameter(torch.ones(self.size))
+#         self.bias = nn.Parameter(torch.zeros(self.size))
         
-        self.eps = eps
+#         self.eps = eps
     
-    def forward(self, x):
-        norm = self.alpha * (x - x.mean(dim=-1, keepdim=True)) \
-        / (x.std(dim=-1, keepdim=True) + self.eps) + self.bias
-        return norm
+#     def forward(self, x):
+#         norm = self.alpha * (x - x.mean(dim=-1, keepdim=True)) \
+#         / (x.std(dim=-1, keepdim=True) + self.eps) + self.bias
+#         return norm
 
-def attention(q, k, v, d_k, mask=None, dropout=None):
+# def attention(q, k, v, d_k, mask=None, dropout=None):
     
-    scores = torch.matmul(q, k.transpose(-2, -1)) /  math.sqrt(d_k)
+#     scores = torch.matmul(q, k.transpose(-2, -1)) /  math.sqrt(d_k)
     
-    if mask is not None:
-        mask = mask.unsqueeze(1)
-        scores = scores.masked_fill(mask == 0, -1e9)
+#     if mask is not None:
+#         mask = mask.unsqueeze(1)
+#         scores = scores.masked_fill(mask == 0, -1e9)
     
-    scores = F.softmax(scores, dim=-1)
+#     scores = F.softmax(scores, dim=-1)
     
-    if dropout is not None:
-        scores = dropout(scores)
+#     if dropout is not None:
+#         scores = dropout(scores)
         
-    output = torch.matmul(scores, v)
-    return output
+#     output = torch.matmul(scores, v)
+#     return output
 
-class MultiHeadAttention(nn.Module):
-    def __init__(self, heads, d_model, seqlen, norm, dropout = 0.1):
-        super().__init__()
+# class MultiHeadAttention(nn.Module):
+#     def __init__(self, heads, d_model, seqlen, norm, dropout = 0.1):
+#         super().__init__()
         
-        self.d_model = d_model
-        self.d_k = d_model // heads
-        self.h = heads
+#         self.d_model = d_model
+#         self.d_k = d_model // heads
+#         self.h = heads
         
-        self.q_linear = nn.Linear(d_model, d_model)
-        self.v_linear = nn.Linear(d_model, d_model)
-        self.k_linear = nn.Linear(d_model, d_model)
-        self.sigma = torch.ones([seqlen,seqlen],dtype=torch.float32)
-        self.sigma = self.sigma.cuda()
-        self.norm = norm
+#         self.q_linear = nn.Linear(d_model, d_model)
+#         self.v_linear = nn.Linear(d_model, d_model)
+#         self.k_linear = nn.Linear(d_model, d_model)
+#         self.sigma = torch.ones([seqlen,seqlen],dtype=torch.float32)
+#         self.sigma = self.sigma.cuda()
+#         self.norm = norm
         
-        self.dropout = nn.Dropout(dropout)
-        self.out = nn.Linear(d_model, d_model)
+#         self.dropout = nn.Dropout(dropout)
+#         self.out = nn.Linear(d_model, d_model)
     
-    def forward(self, q, k, v, mask=None):
+#     def forward(self, q, k, v, mask=None):
         
-        bs = q.size(0)
+#         bs = q.size(0)
         
-        # perform linear operation and split into N heads
-        k = self.k_linear(k).view(bs, -1, self.h, self.d_k)
-        q = self.q_linear(q).view(bs, -1, self.h, self.d_k)
-        v = self.v_linear(v).view(bs, -1, self.h, self.d_k)
+#         # perform linear operation and split into N heads
+#         k = self.k_linear(k).view(bs, -1, self.h, self.d_k)
+#         q = self.q_linear(q).view(bs, -1, self.h, self.d_k)
+#         v = self.v_linear(v).view(bs, -1, self.h, self.d_k)
         
-        # transpose to get dimensions bs * N * sl * d_model
-        k = k.transpose(1,2)
-        q = q.transpose(1,2)
-        v = v.transpose(1,2)
+#         # transpose to get dimensions bs * N * sl * d_model
+#         k = k.transpose(1,2)
+#         q = q.transpose(1,2)
+#         v = v.transpose(1,2)
 
-        # calculate attention using function we will define next
-        scores = attention(q, k, v, self.d_k, mask, self.dropout)
+#         # calculate attention using function we will define next
+#         scores = attention(q, k, v, self.d_k, mask, self.dropout)
 
-        # concatenate heads and put through final linear layer
-        concat = scores.transpose(1,2).contiguous().view(bs, -1, self.d_model)
-        output = self.out(concat)
+#         # concatenate heads and put through final linear layer
+#         concat = scores.transpose(1,2).contiguous().view(bs, -1, self.d_model)
+#         output = self.out(concat)
     
-        return output
+#         return output
 
-class FeedForward(nn.Module):
-    def __init__(self, d_model, d_ff=2048, dropout = 0.1):
-        super().__init__() 
+# class FeedForward(nn.Module):
+#     def __init__(self, d_model, d_ff=2048, dropout = 0.1):
+#         super().__init__() 
     
-        # We set d_ff as a default to 2048
-        self.linear_1 = nn.Linear(d_model, d_ff)
-        self.dropout = nn.Dropout(dropout)
-        self.linear_2 = nn.Linear(d_ff, d_model)
+#         # We set d_ff as a default to 2048
+#         self.linear_1 = nn.Linear(d_model, d_ff)
+#         self.dropout = nn.Dropout(dropout)
+#         self.linear_2 = nn.Linear(d_ff, d_model)
     
-    def forward(self, x):
-        x = self.dropout(F.relu(self.linear_1(x)))
-        x = self.linear_2(x)
-        return x
+#     def forward(self, x):
+#         x = self.dropout(F.relu(self.linear_1(x)))
+#         x = self.linear_2(x)
+#         return x
     
-def get_clones(module, N):
-    return nn.ModuleList([copy.deepcopy(module) for i in range(N)])
+# def get_clones(module, N):
+#     return nn.ModuleList([copy.deepcopy(module) for i in range(N)])
 
-class CosineWithRestarts(torch.optim.lr_scheduler._LRScheduler):
+# class CosineWithRestarts(torch.optim.lr_scheduler._LRScheduler):
 
-    def __init__(self,
-                 optimizer: torch.optim.Optimizer,
-                 T_max: int,
-                 eta_min: float = 0.,
-                 last_epoch: int = -1,
-                 factor: float = 1.) -> None:
-        # pylint: disable=invalid-name
-        self.T_max = T_max
-        self.eta_min = eta_min
-        self.factor = factor
-        self._last_restart: int = 0
-        self._cycle_counter: int = 0
-        self._cycle_factor: float = 1.
-        self._updated_cycle_len: int = T_max
-        self._initialized: bool = False
-        super(CosineWithRestarts, self).__init__(optimizer, last_epoch)
+#     def __init__(self,
+#                  optimizer: torch.optim.Optimizer,
+#                  T_max: int,
+#                  eta_min: float = 0.,
+#                  last_epoch: int = -1,
+#                  factor: float = 1.) -> None:
+#         # pylint: disable=invalid-name
+#         self.T_max = T_max
+#         self.eta_min = eta_min
+#         self.factor = factor
+#         self._last_restart: int = 0
+#         self._cycle_counter: int = 0
+#         self._cycle_factor: float = 1.
+#         self._updated_cycle_len: int = T_max
+#         self._initialized: bool = False
+#         super(CosineWithRestarts, self).__init__(optimizer, last_epoch)
 
-    def get_lr(self):
-        """Get updated learning rate."""
-        # HACK: We need to check if this is the first time get_lr() was called, since
-        # we want to start with step = 0, but _LRScheduler calls get_lr with
-        # last_epoch + 1 when initialized.
-        if not self._initialized:
-            self._initialized = True
-            return self.base_lrs
+#     def get_lr(self):
+#         """Get updated learning rate."""
+#         # HACK: We need to check if this is the first time get_lr() was called, since
+#         # we want to start with step = 0, but _LRScheduler calls get_lr with
+#         # last_epoch + 1 when initialized.
+#         if not self._initialized:
+#             self._initialized = True
+#             return self.base_lrs
 
-        step = self.last_epoch + 1
-        self._cycle_counter = step - self._last_restart
+#         step = self.last_epoch + 1
+#         self._cycle_counter = step - self._last_restart
 
-        lrs = [
-            (
-                self.eta_min + ((lr - self.eta_min) / 2) *
-                (
-                    np.cos(
-                        np.pi *
-                        ((self._cycle_counter) % self._updated_cycle_len) /
-                        self._updated_cycle_len
-                    ) + 1
-                )
-            ) for lr in self.base_lrs
-        ]
+#         lrs = [
+#             (
+#                 self.eta_min + ((lr - self.eta_min) / 2) *
+#                 (
+#                     np.cos(
+#                         np.pi *
+#                         ((self._cycle_counter) % self._updated_cycle_len) /
+#                         self._updated_cycle_len
+#                     ) + 1
+#                 )
+#             ) for lr in self.base_lrs
+#         ]
 
-        if self._cycle_counter % self._updated_cycle_len == 0:
-            # Adjust the cycle length.
-            self._cycle_factor *= self.factor
-            self._cycle_counter = 0
-            self._updated_cycle_len = int(self._cycle_factor * self.T_max)
-            self._last_restart = step
+#         if self._cycle_counter % self._updated_cycle_len == 0:
+#             # Adjust the cycle length.
+#             self._cycle_factor *= self.factor
+#             self._cycle_counter = 0
+#             self._updated_cycle_len = int(self._cycle_factor * self.T_max)
+#             self._last_restart = step
 
-        return lrs    
+#         return lrs    
     
-class DecoderLayerGPT(nn.Module):
-    def __init__(self, d_model, heads, seqlen, norm, dropout=0.1):
-        super().__init__()
-        self.norm_1 = Norm(d_model)
-        self.norm_2 = Norm(d_model)
+# class DecoderLayerGPT(nn.Module):
+#     def __init__(self, d_model, heads, seqlen, norm, dropout=0.1):
+#         super().__init__()
+#         self.norm_1 = Norm(d_model)
+#         self.norm_2 = Norm(d_model)
         
-        self.dropout_1 = nn.Dropout(dropout)
-        self.dropout_2 = nn.Dropout(dropout)
+#         self.dropout_1 = nn.Dropout(dropout)
+#         self.dropout_2 = nn.Dropout(dropout)
         
-        self.attn_1 = MultiHeadAttention(heads, d_model, seqlen, norm, dropout=dropout)
-        self.ff = FeedForward(d_model, dropout=dropout)
+#         self.attn_1 = MultiHeadAttention(heads, d_model, seqlen, norm, dropout=dropout)
+#         self.ff = FeedForward(d_model, dropout=dropout)
         
-    def forward(self, x, mask):
-        x2 = self.norm_1(x)
-        x = x + self.dropout_1(self.attn_1(x2, x2, x2, mask))
-        x2 = self.norm_2(x)
-        x = x + self.dropout_2(self.ff(x2))
-        return x
+#     def forward(self, x, mask):
+#         x2 = self.norm_1(x)
+#         x = x + self.dropout_1(self.attn_1(x2, x2, x2, mask))
+#         x2 = self.norm_2(x)
+#         x = x + self.dropout_2(self.ff(x2))
+#         return x
 
-class DecoderGPT(nn.Module):
-    def __init__(self, vocab_size, d_model, N, heads, seqlen, norm, dropout):
-        super().__init__()
-        self.N = N
-        self.embed = Embedder(vocab_size, d_model)
-        self.pe = PositionalEncoder(d_model, dropout=dropout)
-        self.layers = get_clones(DecoderLayerGPT(d_model, heads, seqlen, norm, dropout), N)
-        self.norm = Norm(d_model)
-    def forward(self, trg, mask):
-        x = self.embed(trg)
-        x = self.pe(x)
-        for i in range(self.N):
-            x = self.layers[i](x, mask)
-        return self.norm(x)
+# class DecoderGPT(nn.Module):
+#     def __init__(self, vocab_size, d_model, N, heads, seqlen, norm, dropout):
+#         super().__init__()
+#         self.N = N
+#         self.embed = Embedder(vocab_size, d_model)
+#         self.pe = PositionalEncoder(d_model, dropout=dropout)
+#         self.layers = get_clones(DecoderLayerGPT(d_model, heads, seqlen, norm, dropout), N)
+#         self.norm = Norm(d_model)
+#     def forward(self, trg, mask):
+#         x = self.embed(trg)
+#         x = self.pe(x)
+#         for i in range(self.N):
+#             x = self.layers[i](x, mask)
+#         return self.norm(x)
     
-class TransformerGPT(nn.Module):
-    def __init__(self, vocab_size, d_model, N, heads, dropout,opt):
-        super().__init__()
-        self.decoder = DecoderGPT(vocab_size, d_model, N, heads, opt.seqlen, opt.norm, dropout)
-        self.decoder = self.decoder.cuda()
-        self.out = nn.Linear(d_model, vocab_size)
-        self.out = self.out.cuda()
-        self.opt = opt
-    def forward(self, trg, trg_mask):
-        d_output = self.decoder(trg, trg_mask)
-        if self.opt.tied == 0:
-            output = self.out(d_output)
-        else:
-            output = torch.matmul(d_output,self.decoder.embed(self.opt.indices).transpose(0,1))
+# class TransformerGPT(nn.Module):
+#     def __init__(self, vocab_size, d_model, N, heads, dropout,opt):
+#         super().__init__()
+#         self.decoder = DecoderGPT(vocab_size, d_model, N, heads, opt.seqlen, opt.norm, dropout)
+#         self.decoder = self.decoder.cuda()
+#         self.out = nn.Linear(d_model, vocab_size)
+#         self.out = self.out.cuda()
+#         self.opt = opt
+#     def forward(self, trg, trg_mask):
+#         d_output = self.decoder(trg, trg_mask)
+#         if self.opt.tied == 0:
+#             output = self.out(d_output)
+#         else:
+#             output = torch.matmul(d_output,self.decoder.embed(self.opt.indices).transpose(0,1))
                     
-        return output
+#         return output
     
 def get_modelGPT(opt, vocab_size):
     
     assert opt.d_model % opt.heads == 0
     assert opt.dropout < 1
     
-    model = TransformerGPT(vocab_size, opt.d_model, opt.n_layers, opt.heads, opt.dropout, opt)
+    # model = TransformerGPT(vocab_size, opt.d_model, opt.n_layers, opt.heads, opt.dropout, opt)
        
     if opt.loadname is not None:
         print("loading pretrained weights...")
-        model.load_state_dict(torch.load(Path(__file__).parent / 'experiments/model_weights'))
+        model = TransformerGPT.load_from_checkpoint(
+            Path(__file__).parent / 'experiments/best-run-b/epoch=4-step=8265.ckpt',
+            vocab_size=vocab_size,
+            d_model=opt.d_model,
+            N=opt.n_layers,
+            heads=opt.heads,
+            dropout=opt.dropout,
+            opt=opt
+        )
+        # model.load_state_dict(torch.load(Path(__file__).parent / 'experiments/best-run-b/epoch=4-step=8265.ckpt'))
     else:
         for p in model.parameters():
             if p.dim() > 1:
@@ -346,14 +357,14 @@ def train_model(model, opt):
                 p = int(100 * (i*bb + 1) / len(opt.train))
                 avg_loss = total_loss/total
                 text = "   %dm: epoch %d [%s%s]  %d%%  wps = %7.0f loss = %.3f % 7.1f" % ((time.time() - start)//60, epoch + 1, "".join('#'*(p//5)), "".join(' '*(20-(p//5))), p, float(aa*bb*total)/float(time.time() - start), avg_loss, math.exp(avg_loss))
-                OutText(text,opt)
+                #OutText(text,opt)
             
         if opt.savename is not None:
             print('saving weights...')
             torch.save(model.state_dict(), opt.savename + '/model_weights')   
    
         text = "%dm: epoch %d [%s%s]  %d%%  loss = %.3f\nepoch %d complete, wps = %7.0f loss = %.03f ppl = %7.1f" % ((time.time() - start)//60, epoch + 1, "".join('#'*(100//5)), "".join(' '*(20-(100//5))), 100, avg_loss, epoch + 1, float(aa*bb*total)/float(time.time()-start), avg_loss,math.exp(avg_loss))
-        OutText(text,opt)
+        #OutText(text,opt)
         
         test_model(model, opt, epoch)
 
@@ -426,14 +437,14 @@ def train_fast(model, opt):
                 p = int(100 * (i*bb + 1) / len(opt.train))
                 avg_loss = total_loss/total
                 text = "   %dm: epoch %d [%s%s]  %d%%  wps = %7.0f loss = %.3f % 7.1f" % ((time.time() - start)//60, epoch + 1, "".join('#'*(p//5)), "".join(' '*(20-(p//5))), p, float(aa*bb*total)/float(time.time() - start), avg_loss, math.exp(avg_loss))
-                OutText(text,opt)
+                #OutText(text,opt)
             
         if opt.savename is not None:
             print('saving weights...')
             torch.save(model.state_dict(), opt.savename + '/model_weights')   
    
         text = "%dm: epoch %d [%s%s]  %d%%  loss = %.3f\nepoch %d complete, wps = %7.0f loss = %.03f ppl = %7.1f" % ((time.time() - start)//60, epoch + 1, "".join('#'*(100//5)), "".join(' '*(20-(100//5))), 100, avg_loss, epoch + 1, float(aa*bb*total)/float(time.time()-start), avg_loss,math.exp(avg_loss))
-        OutText(text,opt)
+        #OutText(text,opt)
         
         test_model(model, opt, epoch)
         
@@ -507,14 +518,14 @@ def train_fast(model, opt):
                 p = int(100 * (i*bb + 1) / len(opt.train))
                 avg_loss = total_loss/total
                 text = "   %dm: epoch %d [%s%s]  %d%%  wps = %7.0f loss = %.3f % 7.1f" % ((time.time() - start)//60, epoch + 1, "".join('#'*(p//5)), "".join(' '*(20-(p//5))), p, float(aa*bb*total)/float(time.time() - start), avg_loss, math.exp(avg_loss))
-                OutText(text,opt)
+                #OutText(text,opt)
             
         if opt.savename is not None:
             print('saving weights...')
             torch.save(model.state_dict(), opt.savename + '/model_weights')   
    
         text = "%dm: epoch %d [%s%s]  %d%%  loss = %.3f\nepoch %d complete, wps = %7.0f loss = %.03f ppl = %7.1f" % ((time.time() - start)//60, epoch + 1, "".join('#'*(100//5)), "".join(' '*(20-(100//5))), 100, avg_loss, epoch + 1, float(aa*bb*total)/float(time.time()-start), avg_loss,math.exp(avg_loss))
-        OutText(text,opt)
+        #OutText(text,opt)
         
         test_model(model, opt, epoch)
         
@@ -549,13 +560,13 @@ def test_model(model, opt, epoch):
         total_loss += loss.item()
         
     text = ' '
-    OutText(text,opt)
+    #OutText(text,opt)
     avg_loss = total_loss/count
     ppl = math.exp(avg_loss)
     text = "%dm: TEST %d [%s%s]  %d%%  loss = %.3f\nepoch %d complete, loss = %.03f ppl = %7.1f" % ((time.time() - start)//60, epoch + 1, "".join('#'*(100//5)), "".join(' '*(20-(100//5))), 100, avg_loss, epoch + 1, avg_loss,math.exp(avg_loss))
-    OutText(text,opt)
+    #OutText(text,opt)
     text = ' '
-    OutText(text,opt)
+    #OutText(text,opt)
         
     model.train()
     opt.bb = opt.batchsize
@@ -648,7 +659,7 @@ def finetune_a(model,opt,tokenizer):
 #                text = text + '*'
             else:
                 incorrect = incorrect + 1
-#            OutText(text,opt)
+#            #OutText(text,opt)
             
             prob = torch.exp(logits[0,pos-1,ans])/(torch.exp(logits[0,pos-1,317])+torch.exp(logits[0,pos-1,347])+torch.exp(logits[0,pos-1,327])+torch.exp(logits[0,pos-1,360]))
             loss = -torch.log(prob)
@@ -668,7 +679,7 @@ def finetune_a(model,opt,tokenizer):
                 p = int(100 * (i*bb + 1) / len(opt.train))
                 avg_loss = total_loss/total
                 text = "   %dm: epoch %d [%s%s]  %d%%  wps = %7.0f loss = %.3f % 7.1f %7.1f%%" % ((time.time() - start)//60, epoch + 1, "".join('#'*(p//5)), "".join(' '*(20-(p//5))), p, float(aa*bb*total)/float(time.time() - start), avg_loss, math.exp(avg_loss),100.0*float(correct)/float(correct+incorrect))
-                OutText(text,opt)
+                #OutText(text,opt)
             
         if opt.savename is not None:
             print('saving weights...')
@@ -676,7 +687,7 @@ def finetune_a(model,opt,tokenizer):
         testmodel_a(model,opt,tokenizer,epoch)
    
         text = "%dm: epoch %d [%s%s]  %d%%  loss = %.3f\nepoch %d complete, wps = %7.0f loss = %.03f ppl = %7.1f" % ((time.time() - start)//60, epoch + 1, "".join('#'*(100//5)), "".join(' '*(20-(100//5))), 100, avg_loss, epoch + 1, float(aa*bb*total)/float(time.time()-start), avg_loss,math.exp(avg_loss))
-        OutText(text,opt)            
+        #OutText(text,opt)            
 
 def testmodel_a(model,opt,tokenizer,epoch):
     print('validating....')
@@ -766,7 +777,7 @@ def testmodel_a(model,opt,tokenizer,epoch):
 #                text = text + '*'
         else:
             incorrect = incorrect + 1
-#            OutText(text,opt)
+#            #OutText(text,opt)
 
         prob = torch.exp(logits[0,pos-1,ans])/(torch.exp(logits[0,pos-1,317])+torch.exp(logits[0,pos-1,347])+torch.exp(logits[0,pos-1,327])+torch.exp(logits[0,pos-1,360]))
         loss = -torch.log(prob)
@@ -775,13 +786,13 @@ def testmodel_a(model,opt,tokenizer,epoch):
         count = count + 1
             
     text = ' '
-    OutText(text,opt)
+    #OutText(text,opt)
     avg_loss = total_loss/count
     ppl = math.exp(avg_loss)
     text = "%dm: TEST %d [%s%s]  %d%%  loss = %.3f\nepoch %d complete, loss = %.03f ppl = %7.1f %7.1f%%" % ((time.time() - start)//60, epoch + 1, "".join('#'*(100//5)), "".join(' '*(20-(100//5))), 100, avg_loss, epoch + 1, avg_loss,math.exp(avg_loss),100.0*float(correct)/float(correct+incorrect))
-    OutText(text,opt)
+    #OutText(text,opt)
     text = ' '
-    OutText(text,opt)
+    #OutText(text,opt)
         
     model.train()
 
@@ -902,7 +913,7 @@ def finetune_b(model,opt,tokenizer):
                 p = int(100 * (i*bb + 1) / len(data))
                 avg_loss = total_loss/total
                 text = "   %dm: epoch %d [%s%s]  %d%%  wps = %7.0f loss = %.3f % 7.1f %7.1f%%" % ((time.time() - start)//60, epoch + 1, "".join('#'*(p//5)), "".join(' '*(20-(p//5))), p, float(aa*bb*total)/float(time.time() - start), avg_loss, math.exp(avg_loss),100.0*float(correct)/float(correct+incorrect))
-                OutText(text,opt)
+                #OutText(text,opt)
             
         if opt.savename is not None:
             print('saving weights...')
@@ -910,7 +921,7 @@ def finetune_b(model,opt,tokenizer):
         testmodel_b(model,opt,tokenizer,epoch)
    
         text = "%dm: epoch %d [%s%s]  %d%%  loss = %.3f\nepoch %d complete, wps = %7.0f loss = %.03f ppl = %7.1f" % ((time.time() - start)//60, epoch + 1, "".join('#'*(100//5)), "".join(' '*(20-(100//5))), 100, avg_loss, epoch + 1, float(aa*bb*total)/float(time.time()-start), avg_loss,math.exp(avg_loss))
-        OutText(text,opt)            
+        #OutText(text,opt)            
 
 def testmodel_b(model,opt,tokenizer,epoch):
     print('validating....')
@@ -918,7 +929,7 @@ def testmodel_b(model,opt,tokenizer,epoch):
     count = 0
     
     data = []
-    with open('obqa.test.txt','rt') as f:
+    with (Path(__file__).parent / 'data/obqa.test.txt').open('rt') as f:
         for line in f:
             line = line.replace('\n','')
             tokens = line.split('|')
@@ -999,7 +1010,7 @@ def testmodel_b(model,opt,tokenizer,epoch):
 #                text = text + '*'
         else:
             incorrect = incorrect + 1
-#            OutText(text,opt)
+#            #OutText(text,opt)
 
         prob = torch.exp(logits[0,pos-1,ans])/(torch.exp(logits[0,pos-1,317])+torch.exp(logits[0,pos-1,347])+torch.exp(logits[0,pos-1,327])+torch.exp(logits[0,pos-1,360]))
         loss = -torch.log(prob)
@@ -1008,13 +1019,13 @@ def testmodel_b(model,opt,tokenizer,epoch):
         count = count + 1
             
     text = ' '
-    OutText(text,opt)
+    #OutText(text,opt)
     avg_loss = total_loss/count
     ppl = math.exp(avg_loss)
     text = "%dm: TEST %d [%s%s]  %d%%  loss = %.3f\nepoch %d complete, loss = %.03f ppl = %7.1f %7.1f%%" % ((time.time() - start)//60, epoch + 1, "".join('#'*(100//5)), "".join(' '*(20-(100//5))), 100, avg_loss, epoch + 1, avg_loss,math.exp(avg_loss),100.0*float(correct)/float(correct+incorrect))
-    OutText(text,opt)
+    #OutText(text,opt)
     text = ' '
-    OutText(text,opt)
+    #OutText(text,opt)
         
     model.train()
     
@@ -1111,7 +1122,7 @@ def finetune_c(model,opt,tokenizer):
                 p = int(100 * (i + 1) / len(data))
                 avg_loss = total_loss/total
                 text = "   %dm: epoch %d [%s%s]  %d%%  wps = %7.0f loss = %.3f % 7.1f %7.1f%%" % ((time.time() - start)//60, epoch + 1, "".join('#'*(p//5)), "".join(' '*(20-(p//5))), p, float(aa*bb*total)/float(time.time() - start), avg_loss, math.exp(avg_loss),100.0*float(correct)/float(correct+incorrect))
-                OutText(text,opt)
+                #OutText(text,opt)
             
         if opt.savename is not None:
             print('saving weights...')
@@ -1119,7 +1130,7 @@ def finetune_c(model,opt,tokenizer):
         testmodel_c(model,opt,tokenizer,epoch)
    
         text = "%dm: epoch %d [%s%s]  %d%%  loss = %.3f\nepoch %d complete, wps = %7.0f loss = %.03f ppl = %7.1f" % ((time.time() - start)//60, epoch + 1, "".join('#'*(100//5)), "".join(' '*(20-(100//5))), 100, avg_loss, epoch + 1, float(aa*bb*total)/float(time.time()-start), avg_loss,math.exp(avg_loss))
-        OutText(text,opt)            
+        #OutText(text,opt)            
 
 def testmodel_c(model,opt,tokenizer,epoch):
     print('validating....')
@@ -1206,13 +1217,13 @@ def testmodel_c(model,opt,tokenizer,epoch):
         count = count + 1
             
     text = ' '
-    OutText(text,opt)
+    #OutText(text,opt)
     avg_loss = total_loss/count
     ppl = math.exp(avg_loss)
     text = "%dm: TEST %d [%s%s]  %d%%  loss = %.3f\nepoch %d complete, loss = %.03f ppl = %7.1f %7.1f%%" % ((time.time() - start)//60, epoch + 1, "".join('#'*(100//5)), "".join(' '*(20-(100//5))), 100, avg_loss, epoch + 1, avg_loss,math.exp(avg_loss),100.0*float(correct)/float(correct+incorrect))
-    OutText(text,opt)
+    #OutText(text,opt)
     text = ' '
-    OutText(text,opt)
+    #OutText(text,opt)
         
     model.train()
 
@@ -1225,9 +1236,9 @@ def main():
     parser.add_argument('-no_cuda', action='store_true')
     parser.add_argument('-SGDR', action='store_true')
     parser.add_argument('-epochs', type=int, default=20)
-    parser.add_argument('-d_model', type=int, default=512)
-    parser.add_argument('-n_layers', type=int, default=6)
-    parser.add_argument('-heads', type=int, default=8)
+    parser.add_argument('-d_model', type=int, default=768)
+    parser.add_argument('-n_layers', type=int, default=12)
+    parser.add_argument('-heads', type=int, default=12)
     parser.add_argument('-dropout', type=int, default=0.1)
     parser.add_argument('-batchsize', type=int, default=1)
     parser.add_argument('-printevery', type=int, default=100)
@@ -1265,8 +1276,8 @@ def main():
     # opt.log_file = dir_name + "santa.txt"
     
     # text = opt.log_file
-    # OutText(opt.log_file,opt)   
-    # OutText(str(opt),opt)
+    # #OutText(opt.log_file,opt)   
+    # #OutText(str(opt),opt)
     
     tokenizer = GPT2TokenizerFast.from_pretrained("gpt2")    
     # if False:
@@ -1303,12 +1314,13 @@ def main():
     opt.indices = torch.tensor(temp)
     opt.indices = opt.indices.cuda()
     
+    opt.loadname = 'blah' # anything but None
     model = get_modelGPT(opt,opt.vocab_size)
         
     model_parameters = filter(lambda p: p.requires_grad, model.parameters())
     params = sum([np.prod(p.size()) for p in model_parameters])        
     # text = 'total params: %d' % (params)
-    # OutText(text,opt)
+    # #OutText(text,opt)
 
     opt.optimizer = torch.optim.Adam(model.parameters(), lr=opt.lr, betas=(0.9, 0.98), eps=1e-9)
     if opt.SGDR == True:
@@ -1326,7 +1338,8 @@ def main():
 #    train_fast(model,opt)
 #    finetune_a(model,opt,tokenizer)
 #    finetune_b(model,opt,tokenizer)
-    finetune_c(model,opt,tokenizer)
+#    finetune_c(model,opt,tokenizer)
+    testmodel_b(model, opt, tokenizer, 0)
         
 if __name__ == "__main__":
     main()     
