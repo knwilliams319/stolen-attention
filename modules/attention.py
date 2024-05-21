@@ -42,10 +42,10 @@ class AttentionMechanism(nn.Module):
                 self.temperatures = nn.Parameter(torch.Tensor(1), requires_grad=True)
 
         # Q/K Hull calculation data structures
-        self.k_matrix = [None]*num_heads
-        self.k_hull = [None]*num_heads
-        self.attn_weights = [None]*num_heads
-        self.query_point = [None]*num_heads
+        self.k_embed = None
+        self.k_hull = None
+        self.attn_weights = None
+        self.query_points = None
 
     def init_modules(self, sigma_main, sigma_proj):
         nn.init.normal_(self.qkv_proj.weight, mean=0, std=sigma_main)
@@ -56,34 +56,7 @@ class AttentionMechanism(nn.Module):
         if self.learn_temperatures:
             nn.init.uniform_(self.temperatures, 0.95, 1.05) # draw uniformly around 1, which is technically the temperature for F.softmax
 
-    def forward(self, x, mask=None):
-        batch_size, seq_length, embed_dim = x.size()
-        qkv = self.qkv_proj(x)
-
-        # Separate Q, K, V from linear output
-        qkv = qkv.reshape(batch_size, seq_length, self.num_heads, 3 * self.head_dim)
-        qkv = qkv.permute(0, 2, 1, 3)  # [Batch, Head, SeqLen, Dims]
-        q, k, v = qkv.chunk(3, dim=-1)
-
-        # Get attention logits and add attention mask
-        attn_logits = self.get_logits(q, k)
-        if mask is not None:
-            attn_logits = attn_logits.masked_fill(mask, -65504.0) # smallest half-precision number
-
-        # Retrieve attention weights and values
-        attention = self.softmax_fn(attn_logits, dim=-1)
-        attention = self.dropout(attention)
-        values = torch.matmul(attention, v)
-    
-        # Reshape for output projection
-        values = values.permute(0, 2, 1, 3)  # [Batch, SeqLen, Head, Dims]
-        values = values.reshape(batch_size, seq_length, embed_dim)
-        o = self.o_proj(values)
-
-        # Return outputs
-        return o
-
-    def forward_and_save_stats(self, x, mask=None):
+    def forward(self, x, mask=None, save_attn_stats=False):
         batch_size, seq_length, embed_dim = x.size()
         qkv = self.qkv_proj(x)
 
@@ -113,17 +86,18 @@ class AttentionMechanism(nn.Module):
         # Get attention logits and add attention mask
         attn_logits = self.get_logits(q, k)
         if mask is not None:
-            attn_logits = attn_logits.masked_fill(mask, -65504.0)  # smallest half-precision number
+            attn_logits = attn_logits.masked_fill(mask, -65504.0) # smallest half-precision number
 
         # Retrieve attention weights and values
-        # Save statistics about the query point, K embeddings, and attention weights
         attention = self.softmax_fn(attn_logits, dim=-1)
-        for i in range(self.num_heads):
-            self.query_point[i] = q[0][i][-1].cpu()
-            self.k_matrix[i] = k[0][i].cpu()
-            self.attn_weights[i] = attention[0][i][-1].cpu()  # take full context length weights for all heads
         attention = self.dropout(attention)
         values = torch.matmul(attention, v)
+
+        # Save attention stats if necessary. This should be done after dropout is applied to attention in case the model was trained with dropout.
+        if save_attn_stats:
+            self.query_points = q[:,:,-1]
+            self.k_embed = k
+            self.attn_weights = attention[:,:,-1]
     
         # Reshape for output projection
         values = values.permute(0, 2, 1, 3)  # [Batch, SeqLen, Head, Dims]

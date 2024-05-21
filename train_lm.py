@@ -199,7 +199,7 @@ class Wikitext103Model(CausalTransformer):
   
 # SECTION: Training parameters
 # TODO: make these CLI arguments instead of constants 
-CHECKPOINT_BASE = "./experiments/embed_dim_512/128_heads/"
+CHECKPOINT_BASE = "./experiments/embed_dim_512/test_heads/"
 EXPERIMENT = "base"
 CHECKPOINT_DIR = CHECKPOINT_BASE + '/' + EXPERIMENT
 
@@ -264,7 +264,7 @@ if __name__ == "__main__":
             LearningRateMonitor(logging_interval='step')
         ],
         accelerator="gpu",
-        devices=3,
+        devices=[1],
         strategy=DDPStrategy(static_graph=True),
         accumulate_grad_batches=1,
         precision="16-mixed",
@@ -286,7 +286,7 @@ if __name__ == "__main__":
             attention_norm=None,           # Use None for dot-product attention, 1 for Manhattan, or 2 for Euclidean
             learn_temperatures=False,
             positional_temperatures=False,
-            num_heads=128,
+            num_heads=8,
             num_layers=12,
             dropout=0.1,
             attn_dropout=0.1,

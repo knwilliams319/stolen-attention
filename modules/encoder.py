@@ -4,11 +4,6 @@ import torch.nn as nn
 from .attention import DotProductAttention, ManhattanAttention, EuclideanAttention
 #!SECTION
 
-# SECTION: A global switch for whether forward() or forward_and_save_stats() is called on an attention head in a layer
-global capture_stats_in_last_n_layers
-capture_stats_in_last_n_layers = 0
-# !SECTION
-
 # SECTION: A single Encoder Block
 class EncoderBlock(nn.Module):
     def __init__(self,
@@ -129,10 +124,7 @@ class EncoderBlock(nn.Module):
         # Normalize inputs and calculate attention
         residual = x
         x = self.input_norm(x)
-        if save_attn_stats:
-            x = self.self_attn.forward_and_save_stats(x, mask=mask)
-        else:
-            x = self.self_attn(x, mask=mask)
+        x = self.self_attn(x, mask=mask, save_attn_stats=save_attn_stats)
 
         # Add and norm
         x = self.dropout_1(x)
@@ -165,11 +157,11 @@ class TransformerEncoder(nn.Module):
             [EncoderBlock(**block_args) for _ in range(num_layers)]
         )
 
-    def forward(self, x, mask=None):
+    def forward(self, x, mask=None, save_after_k=-1):
         if mask is not None: # add head dimension to mask at once instead of appending it within each layer
             mask = mask.unsqueeze(1).repeat(1, self.num_heads, 1, 1)
         for i, layer in enumerate(self.layers):
-            if i >= len(self.layers) - capture_stats_in_last_n_layers:
+            if save_after_k >= 0 and i >= save_after_k:
                 x = layer(x, mask=mask, save_attn_stats=True)
             else:
                 x = layer(x, mask=mask) # normal forward

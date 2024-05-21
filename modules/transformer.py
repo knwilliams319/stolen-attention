@@ -125,7 +125,7 @@ class CausalTransformer(L.LightningModule):
         nn.init.normal_(self.output_proj.weight, mean=0, std=sigma_main)
         self.transformer.init_layers(sigma_main, sigma_proj)
 
-    def forward(self, x, pad_mask=None):
+    def forward(self, x, pad_mask=None, save_after_k=-1):
         """
         Args:
             x: Input features of shape [Batch, SeqLen]
@@ -145,7 +145,7 @@ class CausalTransformer(L.LightningModule):
         x = self.dropout(x)
 
         # Send data through the decoder layers and normalize outputs
-        x = self.transformer(x, mask=mask)
+        x = self.transformer(x, mask=mask, save_after_k=save_after_k)
         x = self.output_norm(x)
 
         # Project outputs

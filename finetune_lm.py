@@ -74,6 +74,8 @@ class OpenbookQADataset(data.Dataset):
 # !SECTION
 
 # SECTION: Model Definition
+# TODO: Move this to a more general location. The use of save_after_k doesn't make sense in this file, although it's useful in validate_lm_obqa 
+#       to keep the loss calculation consistent between a fine-tuned model and capturing statistics on held-out data later. 
 class OpenbookQAModel(CausalTransformer):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -92,10 +94,10 @@ class OpenbookQAModel(CausalTransformer):
         # }
         return optimizer
     
-    def _calculate_loss(self, batch):
+    def _calculate_loss(self, batch, save_after_k=-1):
         data, labels, mask = batch
         data = data
-        preds = self(data, pad_mask=mask)[:, -1] # only take last hidden state
+        preds = self(data, pad_mask=mask, save_after_k=save_after_k)[:, -1] # only take last hidden state
         labels = labels.long()
 
         # Try David's custom-built F.cross_entropy that's only over the answer space despite technically allowing the model to output any token
