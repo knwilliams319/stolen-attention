@@ -292,7 +292,7 @@ class Wikitext103Model(CausalTransformer):
   
 # SECTION: Training parameters
 # TODO: make these CLI arguments instead of constants 
-CHECKPOINT_BASE = "./experiments/embed_dim_512/64_heads"
+CHECKPOINT_BASE = "./experiments/embed_dim_512/8_heads_no_decay"
 EXPERIMENT = "base"
 CHECKPOINT_DIR = CHECKPOINT_BASE + '/' + EXPERIMENT
 VALID_PATH = "./data/wikitext-103/unigram.wiki.valid.tokens.tokenized.pt"
@@ -309,7 +309,7 @@ if __name__ == "__main__":
         enable_progress_bar=True,
         accelerator="gpu",          
         strategy="ddp",
-        devices=[0],                  
+        devices=[1],                  
         precision="16-mixed",     # NOTE: Might need to be 32-true depending on the checkpoint
         benchmark=True,
         logger=False,             # Turns off creation of 'lightning_logs' directory
