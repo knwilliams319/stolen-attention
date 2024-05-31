@@ -200,8 +200,8 @@ class Wikitext103Model(CausalTransformer):
   
 # SECTION: Training parameters
 # TODO: make these CLI arguments instead of constants 
-CHECKPOINT_BASE = "./experiments/embed_dim_512/8_heads/"
-EXPERIMENT = "base"
+CHECKPOINT_BASE = "./experiments/embed_dim_512/64_heads/"
+EXPERIMENT = "euc"
 CHECKPOINT_DIR = CHECKPOINT_BASE + '/' + EXPERIMENT
 
 TRAIN_PATH = "./data/wikitext-103/unigram.wiki.train.tokens.tokenized.pt"
@@ -262,9 +262,8 @@ if __name__ == "__main__":
             LearningRateMonitor(logging_interval='step')
         ],
         accelerator="gpu",
-        devices=[1, 2],
+        devices=2,
         strategy=DDPStrategy(static_graph=True),
-        accumulate_grad_batches=1,
         precision="16-mixed",
         max_steps=100000,
         gradient_clip_val=1.0,
@@ -282,10 +281,10 @@ if __name__ == "__main__":
             num_classes=len(tokenizer),
             max_context_len=512,
             model_dim=512,
-            attention_norm=None,           # Use None for dot-product attention, 1 for Manhattan, or 2 for Euclidean
+            attention_norm=2,           # Use None for dot-product attention, 1 for Manhattan, or 2 for Euclidean
             learn_temperatures=False,
             positional_temperatures=False,
-            num_heads=8,
+            num_heads=64,
             num_layers=12,
             dropout=0.1,
             attn_dropout=0.1,
@@ -299,8 +298,12 @@ if __name__ == "__main__":
         trainer.fit(model, train_loader, val_loader)
     else:
         for ckpt in checkpoints:
-            if ckpt.startswith('backup-state'):
+            backup_found = False
+            if backup_found or ckpt.startswith('backup-state'):
                 model = Wikitext103Model.load_from_checkpoint(ckpt)
+                print(f"Training will resume from checkpoint {ckpt}")
                 trainer.fit(model, train_loader, val_loader)
+                backup_found = True
+        if not backup_found:
             raise ValueError(f"Directory {checkpoint_path} does not have a valid backup state to continue training!")
 #!SECTION
