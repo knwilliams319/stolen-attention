@@ -81,17 +81,8 @@ class OpenbookQAModel(CausalTransformer):
         super().__init__(*args, **kwargs)
 
     def configure_optimizers(self):
-        # So far, Adam with no scheduler has performed better than using a scheduler or another optimizer + a scheduler. 
-        optimizer = torch.optim.Adam(self.parameters(), lr=self.hparams.lr, betas=(0.9, 0.98), eps=1e-9)
-        # scheduler = REXScheduler(optimizer, num_steps=self.hparams.num_steps)
-        # return {
-        #     "optimizer": optimizer,
-        #     "lr_scheduler": {
-        #         "scheduler": scheduler,
-        #         "interval": "step",
-        #         "frequency": 1
-        #     }
-        # }
+        # Same use optimizer from Pre-Training without a schedule (and a potentially new learning rate)
+        optimizer = torch.optim.RAdam(self.parameters(), lr=self.hparams.lr, betas=(0.9, 0.99), eps=1e-6)
         return optimizer
     
     def _calculate_loss(self, batch, save_after_k=-1):
@@ -117,7 +108,7 @@ class OpenbookQAModel(CausalTransformer):
         return loss, num_correct
     
     def training_step(self, batch, batch_idx):
-        loss, _ = self._calculate_loss(batch)
+        loss, num_correct = self._calculate_loss(batch)
         self.log(
             "train_loss",
             loss,
@@ -139,6 +130,13 @@ class OpenbookQAModel(CausalTransformer):
             on_epoch=False,
             prog_bar=True
         )
+        self.log(
+            "train_accuracy",
+            num_correct/4957,  # NOTE: 100% accuracy is 4957
+            on_step=False,
+            on_epoch=True,
+            reduce_fx="sum"
+        )
         return loss
     
     def validation_step(self, batch, batch_idx):
@@ -153,7 +151,7 @@ class OpenbookQAModel(CausalTransformer):
         )
         self.log(
             "val_accuracy",
-            num_correct/500,  # NOTE: 100% accuracy is 500 (and without the float conversion, I get a warning)
+            num_correct/500,  # NOTE: 100% accuracy is 500
             on_step=False,
             on_epoch=True,
             reduce_fx="sum"
@@ -182,10 +180,10 @@ if __name__ == "__main__":
     # Parse CLI Arguments
     parser = argparse.ArgumentParser()
     parser.add_argument('--no-cuda', action='store_true')
-    parser.add_argument('--epochs', type=int, default=5)
+    parser.add_argument('--epochs', type=int, default=20)
     parser.add_argument('--lr', type=float, default=1e-5)
     parser.add_argument('--clip_norm', type=float, default=2.0)
-    parser.add_argument('--batchsize', type=int, default=1)
+    parser.add_argument('--batchsize', type=int, default=32)
     parser.add_argument('--log-every', type=int, default=100)
     parser.add_argument('--train-path', type=Path, default=TRAIN_PATH)
     parser.add_argument('--val-path', type=Path, default=VAL_PATH)

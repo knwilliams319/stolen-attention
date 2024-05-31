@@ -50,11 +50,15 @@ def main():
     step_metrics = step_metrics.reindex(sorted(step_metrics.columns), axis=1)  # sort columns to make metrics easier to read
     step_metrics.to_csv(save_dir / 'step_metrics.csv', index=False)
 
-    # Create the epoch-level metrics CSV (epoch, average train loss, and validation loss)
+    # Create the epoch-level metrics CSV (epoch, average train loss, validation loss, and (optional) average train accuracy and validation accuracy)
     rows_to_keep = epoch_metrics['val_loss'].notna() | epoch_metrics['train_loss_epoch'].notna()  # for pandas, | is elementwise or
     epoch_metrics = epoch_metrics.loc[rows_to_keep]
-    epoch_metrics = epoch_metrics[['epoch', 'train_loss_epoch', 'val_loss']]
-    epoch_metrics.columns = ['epoch', 'train_loss', 'val_loss']
+    cols_to_keep = ['epoch']
+    cols_to_keep += [col for col in epoch_metrics.columns if col.startswith('train') and not col.endswith('step')]
+    cols_to_keep += [col for col in epoch_metrics.columns if col.startswith('val')]
+    cols_names = [col[:-6] if col.endswith('_epoch') else col for col in cols_to_keep]
+    epoch_metrics = epoch_metrics[cols_to_keep]
+    epoch_metrics.columns = cols_names
     epoch_metrics = epoch_metrics.groupby('epoch').sum().reset_index()  # for each group, one row has (train_loss) and the other has (val_loss)
     epoch_metrics.to_csv(save_dir / 'epoch_metrics.csv', index=False)
     

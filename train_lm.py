@@ -103,7 +103,8 @@ class Wikitext103Model(CausalTransformer):
             {'params': temperature_params, 'lr': temperature_lr}
         ]
 
-        optimizer = optim.RAdam(param_split, lr=self.hparams.lr, betas=(0.9, 0.99), eps=1e-6, weight_decay=1e-4)
+        # Create optimizer and scheduler
+        optimizer = optim.RAdam(param_split, lr=self.hparams.lr, betas=(0.9, 0.99), eps=1e-6, weight_decay=0.0)
         scheduler = REXScheduler(optimizer, num_steps=self.hparams.num_steps)
         return {
             "optimizer": optimizer,
@@ -199,8 +200,8 @@ class Wikitext103Model(CausalTransformer):
   
 # SECTION: Training parameters
 # TODO: make these CLI arguments instead of constants 
-CHECKPOINT_BASE = "./experiments/embed_dim_512/test_heads/"
-EXPERIMENT = "base"
+CHECKPOINT_BASE = "./experiments/embed_dim_512/64_heads/"
+EXPERIMENT = "euc"
 CHECKPOINT_DIR = CHECKPOINT_BASE + '/' + EXPERIMENT
 
 TRAIN_PATH = "./data/wikitext-103/unigram.wiki.train.tokens.tokenized.pt"
@@ -215,10 +216,6 @@ TOKENIZER_PATH = "./unigram-tokenizer/tokenizer.model"
 if __name__ == "__main__":
     # Create checkpoint directory. If it exists, allow user to clear them for a replacement experiment. 
     checkpoint_path = Path(CHECKPOINT_DIR)
-    # if checkpoint_path.exists():  # TODO: I like this option, but it gets re-run for each device, so you have to Return 'Y' three times
-    #     print(f'Logs exist at {checkpoint_path}! Return `Y` to remove them and continue, or press any other key to exit.')
-    #     if input() == 'Y':
-    #         shutil.rmtree(checkpoint_path)
     checkpoint_path.mkdir(parents=True, exist_ok=True)
 
     # Initialize tokenizer
@@ -230,7 +227,8 @@ if __name__ == "__main__":
     val_dataset = FlattenedWikitext103Dataset(VALID_PATH, tokenizer.pad_id(), len(tokenizer), stride=256, window_length=512)
     #test_dataset = Wikitext103Dataset(TEST_PATH, tokenizer.pad_id(), len(tokenizer))
 
-    BATCH_SIZE = 13  # NOTE: This is the highest we can go with model_dim=512 and d_k=4
+    # NOTE: Batch size of 13 is the highest we can go with model_dim=512 and d_k=4
+    BATCH_SIZE = 20  # I can fit this with 8 heads, and David is using one GPU, so I'll have to train on 2. This will make sure we injest roughly the same amount of data per step. 
     train_loader = data.DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, drop_last=True, num_workers=3)
     val_loader = data.DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, drop_last=False, num_workers=3)
     #test_loader = data.DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, drop_last=False, num_workers=3)
@@ -250,7 +248,7 @@ if __name__ == "__main__":
             ModelSummary(),
             ModelCheckpoint(
                 save_weights_only=True,
-                mode="min", 
+                mode="min",
                 monitor="val_loss",
                 dirpath=CHECKPOINT_DIR,
                 filename='best-weights-{epoch:02d}'
@@ -264,9 +262,8 @@ if __name__ == "__main__":
             LearningRateMonitor(logging_interval='step')
         ],
         accelerator="gpu",
-        devices=[1],
+        devices=2,
         strategy=DDPStrategy(static_graph=True),
-        accumulate_grad_batches=1,
         precision="16-mixed",
         max_steps=100000,
         gradient_clip_val=1.0,
@@ -278,15 +275,16 @@ if __name__ == "__main__":
     trainer.logger._default_hp_metric = None  # Optional logging argument that we don't need
 
     # Check whether a checkpoint exists in this directory. If so, exit with error as to not overwrite any data due to missed input.
-    if len(list(checkpoint_path.glob('*.ckpt'))) == 0:
+    checkpoints = list(checkpoint_path.glob('*.ckpt'))
+    if len(checkpoints) == 0:
         model = Wikitext103Model(
             num_classes=len(tokenizer),
             max_context_len=512,
             model_dim=512,
-            attention_norm=None,           # Use None for dot-product attention, 1 for Manhattan, or 2 for Euclidean
+            attention_norm=2,           # Use None for dot-product attention, 1 for Manhattan, or 2 for Euclidean
             learn_temperatures=False,
             positional_temperatures=False,
-            num_heads=8,
+            num_heads=64,
             num_layers=12,
             dropout=0.1,
             attn_dropout=0.1,
@@ -299,5 +297,13 @@ if __name__ == "__main__":
         )
         trainer.fit(model, train_loader, val_loader)
     else:
-        raise ValueError(f"Directory {checkpoint_path} already contains pretrained model checkpoints!")
+        for ckpt in checkpoints:
+            backup_found = False
+            if backup_found or ckpt.startswith('backup-state'):
+                model = Wikitext103Model.load_from_checkpoint(ckpt)
+                print(f"Training will resume from checkpoint {ckpt}")
+                trainer.fit(model, train_loader, val_loader)
+                backup_found = True
+        if not backup_found:
+            raise ValueError(f"Directory {checkpoint_path} does not have a valid backup state to continue training!")
 #!SECTION

@@ -5,12 +5,12 @@ import shutil
 # import pickle
 
 import torch
-import torch.nn.functional as F
+# import torch.nn.functional as F
 import torch.utils.data as data
 import lightning as L
 from sentencepiece import SentencePieceProcessor
 import pandas as pd
-import numpy as np
+# import numpy as np
 import scipy.spatial as sp
 from lightning.pytorch.loggers import CSVLogger
 from lightning.pytorch.loggers.logger import Logger
@@ -29,36 +29,70 @@ class CaptureStatsOpenbookQAModel(L.LightningModule):
         self.num_correct = 0
         self.num_seen = 0
         self.batch_offset = 0
+        self.calculate_hull = opt.calculate_hull
 
     def forward(self, x, mask=None):
         return self.model(x, mask=mask, save_after_k=self.save_after_k)
+    
+    def _calculate_angle(self, query, key):
+        # Compute the dot product
+        dot_product = torch.dot(query, key)
+        
+        # Compute the magnitudes (norms) of the vectors
+        norm_a = torch.norm(query)
+        norm_b = torch.norm(key)
+        
+        # Compute the cosine of the angle
+        cos_theta = dot_product / (norm_a * norm_b)
+        
+        # Clip the cosine value to the range [-1, 1] to avoid numerical issues with arccos
+        cos_theta = torch.clamp(cos_theta, -1.0, 1.0)
+        
+        # Compute the angle in radians
+        angle_rad = torch.acos(cos_theta)
+        
+        return angle_rad.item(), norm_b.item()
 
     def validation_step(self, batch, batch_idx):
         _, num_correct = self.model._calculate_loss(batch, save_after_k=self.save_after_k)
         self.num_correct += num_correct
 
-        bsz, max_len = batch[0].size()
-        q_lens = batch[2].sum(dim=-1)
+        bsz, max_len = batch[0].size()       # batch size and number of maximum possible positions
+        n_pad_tokens = batch[2].sum(dim=-1)  # find number of pad positions
 
         for l, layer in enumerate(self.model.transformer.layers):
             if l >= self.save_after_k:
                 # Grab and condense stats for the layer
                 attn_module = layer.self_attn
-                query_norms = torch.norm(attn_module.query_points, dim=-1).mT        # [bsz, n_heads] --> [n_heads, bsz]
-                k_norms = torch.norm(attn_module.k_embed, dim=-1).transpose(-2, 0)   # [bsz, n_heads, max_len] --> [n_heads, bsz, max_len]
-                weights = attn_module.attn_weights.transpose(-2, 0)                  # [bsz, n_heads, max_len] --> [n_heads, bsz, max_len]
+
+                queries = attn_module.query_points.cpu().float().transpose(0, 1) # [bsz, n_heads, head_dim] --> [n_heads, bsz, head_dim]
+                k_embed = attn_module.k_embed.cpu().float().transpose(0, 1)      # [bsz, n_heads, seq_len, head_dim] --> [n_heads, bsz, seq_len, head_dim]
+                weights = attn_module.attn_weights.float().transpose(0, 1)       # [bsz, n_heads, max_len] --> [n_heads, bsz, max_len]
 
                 # Individually log stats for each head in the layer
                 for h in range(self.model.hparams.num_heads):
                     # Build batch-level statistics into the dictionary and log them repeatedly for the layer/head combination
                     for b_idx in range(bsz):
                         stats_dict = {"layer": float(l), "head": float(h)}  # identify the layer/head for which we're logging
-                        stats_dict['question_len'] = float(q_lens[b_idx])
-                        stats_dict['query_norm'] = query_norms[h][b_idx]
+                        stats_dict['question_len'] = float(max_len - n_pad_tokens[b_idx])
+                        if self.calculate_hull:
+                            k_hull = sp.ConvexHull(k_embed[h][b_idx][n_pad_tokens[b_idx]:])         # only count non-padded positions
+                            vertices = k_hull.vertices + n_pad_tokens[b_idx].item()
 
                         for s_idx in range(max_len):
-                            stats_dict[f'k_norm_{s_idx}'] = k_norms[h][b_idx][s_idx]
-                            stats_dict[f'k_weight_{s_idx}'] = weights[h][b_idx][s_idx]
+                            if s_idx >= n_pad_tokens[b_idx].item():
+                                stats_dict[f'angle_{s_idx}'], stats_dict[f'norm_{s_idx}'] = self._calculate_angle(queries[h][b_idx], k_embed[h][b_idx][s_idx])
+                                stats_dict[f'weight_{s_idx}'] = weights[h][b_idx][s_idx].item()
+                                stats_dict[f'token_{s_idx}'] = batch[0][b_idx][s_idx]
+                                if self.calculate_hull:
+                                    stats_dict[f'k_vertex_{s_idx}'] = s_idx in vertices
+                            else:
+                                stats_dict[f'q_angle_{s_idx}'] = pd.NA
+                                stats_dict[f'norm_{s_idx}'] = pd.NA
+                                stats_dict[f'weight_{s_idx}'] = pd.NA
+                                stats_dict[f'token_{s_idx}'] = 0
+                                if self.calculate_hull:
+                                    stats_dict[f'k_vertex_{s_idx}'] = pd.NA
 
                         # NOTE: Using self.logger directly is NECESSARY. Else, we will only log once per step, which
                         #       means that we'll only capture statistics for the last batch of the head (instead of all head/batch combos)
@@ -102,8 +136,6 @@ class NestedCSVLogger(Logger):
     
     @rank_zero_only
     def log_hyperparams(self, params):
-        # params is an argparse.Namespace
-        # your code to record hyperparameters goes here
         pass
     
     def get_logger(self, layer_idx, head_idx):
@@ -131,8 +163,9 @@ class NestedCSVLogger(Logger):
 # SECTION: Paths and constants used for default arguments below
 base = Path(__file__).parent
 TOKENIZER_PATH = (base / "unigram-tokenizer/tokenizer.model").as_posix()        # NOTE: needs to be a string
-EXPERIMENT_DIR = base / 'experiments/embed_dim_512/8_heads/base/finetune_bsz_1'
-OBQA_VALID_PATH = base / 'floyd-finetune/data/obqa.valid.txt'
+EXPERIMENT_DIR = base / 'experiments/embed_dim_512/8_heads/base/finetune'
+OBQA_TRAIN_PATH = base / 'data/openbookqa/obqa.train.txt'
+OBQA_VALID_PATH = base / 'data/openbookqa/obqa.valid.txt'
 #!SECTION
         
 # SECTION: Training loop
@@ -145,8 +178,11 @@ if __name__ == "__main__":
     parser.add_argument('--use-last', action='store_true')  # default = use best weights
     parser.add_argument('--experiment-dir', type=Path, default=EXPERIMENT_DIR)
     parser.add_argument('--valid-path', type=Path, default=OBQA_VALID_PATH)
+    parser.add_argument('--train-path', type=Path, default=OBQA_TRAIN_PATH)
+    parser.add_argument('--use-train', action='store_true') # default = use validation set
     parser.add_argument('--save-stats', action='store_true')
     parser.add_argument('--stats-last-k-layers', type=int, default=0)
+    parser.add_argument('--calculate-hull', action='store_true')
     opt = parser.parse_args()
 
     # Post-process some of the CLI arguments
@@ -161,13 +197,15 @@ if __name__ == "__main__":
         assert opt.stats_last_k_layers > 0, "--save-stats was passed, so --stats-last-k-layers should be >0!"
         opt.save_dir = opt.model_path.parent / 'attention_stats'
     else:
-        assert opt.stats_last_k_layers == 0, "--stats-last-k-layers was >0, but --save-stats was not passed!"
+        assert opt.stats_last_k_layers == 0, "--stats-last-k-layers was >0, but --save-stats was not set!"
+        assert opt.calculate_hull == False, "--calculate-hull was passed, but --save-stats was not set!"
+    opt.data_path = opt.train_path if opt.use_train else opt.valid_path
 
     # Initialize tokenizer
     tokenizer = SentencePieceProcessor(model_file=opt.tokenizer_path)
 
     # Create Dataloader
-    val_dataset = OpenbookQADataset(opt.valid_path, tokenizer)
+    val_dataset = OpenbookQADataset(opt.data_path, tokenizer)
     val_loader = data.DataLoader(val_dataset, batch_size=opt.batchsize, shuffle=False, num_workers=3)
 
     # Set up for training. Set random seeds and initialize Trainer. 
@@ -210,6 +248,5 @@ if __name__ == "__main__":
 
                 # Save the processed dataframe at the new location
                 df.to_csv(new_path, index=False)
-
-    shutil.rmtree(opt.save_dir) # Remove the original directory now that everything is processed
+        shutil.rmtree(opt.save_dir) # Remove the original directory now that everything is processed
 #!SECTION
