@@ -169,9 +169,9 @@ def get_model(opt):
   
 # SECTION: Paths and constants used for default arguments below
 base = Path(__file__).parent
-EXPERIMENT_DIR = base / 'experiments/embed_dim_512/8_heads/base'
-TRAIN_PATH = base / 'floyd-finetune/data/obqa.train.txt'
-VAL_PATH = base / 'floyd-finetune/data/obqa.valid.txt'
+EXPERIMENT_DIR = base / 'experiments/embed_dim_512/64_heads/euc'
+TRAIN_PATH = base / 'data/openbookqa/obqa.train.txt'
+VAL_PATH = base / 'data/openbookqa/obqa.valid.txt'
 TOKENIZER_PATH = "./unigram-tokenizer/tokenizer.model"
 #!SECTION
         
